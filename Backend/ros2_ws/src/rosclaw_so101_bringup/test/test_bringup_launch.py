@@ -26,3 +26,19 @@ def test_launch_file_includes_both_stacks():
     contents = launch_path.read_text()
     assert 'FindPackageShare("rosclaw_bringup")' in contents
     assert 'FindPackageShare("so101_follower_control")' in contents
+
+
+def test_launch_uses_calibration_directory_default():
+    launch_path = Path(__file__).resolve().parents[1] / "launch" / "bringup.launch.py"
+    contents = launch_path.read_text()
+    assert "so101_follower" in contents
+    assert "atr-follower.json" not in contents
+
+
+def test_launch_forwards_cartesian_services():
+    launch_path = Path(__file__).resolve().parents[1] / "launch" / "bringup.launch.py"
+    contents = launch_path.read_text()
+    assert '"cartesian_goal_enabled"' in contents
+    assert '"resolve_cartesian_goal_service"' in contents
+    assert '"move_to_cartesian_goal_service"' in contents
+    assert '"convert_cartesian_coordinates_service"' in contents

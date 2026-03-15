@@ -33,6 +33,9 @@ def generate_launch_description():
     resolved_goal_topic = LaunchConfiguration('resolved_goal_topic')
     resolve_cartesian_goal_service = LaunchConfiguration('resolve_cartesian_goal_service')
     move_to_cartesian_goal_service = LaunchConfiguration('move_to_cartesian_goal_service')
+    convert_cartesian_coordinates_service = LaunchConfiguration(
+        'convert_cartesian_coordinates_service'
+    )
     agent_bridge_enabled = LaunchConfiguration('agent_bridge_enabled')
     agent_state_topic = LaunchConfiguration('agent_state_topic')
     agent_state_publish_rate = LaunchConfiguration('agent_state_publish_rate')
@@ -141,6 +144,7 @@ def generate_launch_description():
                 'resolved_goal_topic': resolved_goal_topic,
                 'resolve_cartesian_goal_service': resolve_cartesian_goal_service,
                 'move_to_cartesian_goal_service': move_to_cartesian_goal_service,
+                'convert_cartesian_coordinates_service': convert_cartesian_coordinates_service,
                 'workspace_x_min': workspace_x_min,
                 'workspace_x_max': workspace_x_max,
                 'workspace_y_min': workspace_y_min,
@@ -255,6 +259,10 @@ def generate_launch_description():
             DeclareLaunchArgument('resolved_goal_topic', default_value='resolved_cartesian_goal'),
             DeclareLaunchArgument('resolve_cartesian_goal_service', default_value='resolve_cartesian_goal'),
             DeclareLaunchArgument('move_to_cartesian_goal_service', default_value='move_to_cartesian_goal'),
+            DeclareLaunchArgument(
+                'convert_cartesian_coordinates_service',
+                default_value='convert_cartesian_coordinates',
+            ),
             DeclareLaunchArgument('agent_bridge_enabled', default_value='true'),
             DeclareLaunchArgument('agent_state_topic', default_value='agent_state'),
             DeclareLaunchArgument('agent_state_publish_rate', default_value='2.0'),

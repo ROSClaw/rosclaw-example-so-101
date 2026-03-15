@@ -5,10 +5,17 @@ import math
 from typing import Iterable
 
 from builtin_interfaces.msg import Time as TimeMsg
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PointStamped, PoseStamped
 
-from so101_follower_control.cartesian_kinematics import normalize_pose_stamped, pose_to_kdl_frame
+from so101_follower_control.cartesian_kinematics import (
+    frame_id_to_link_name,
+    normalize_pose_stamped,
+    pose_to_kdl_frame,
+)
 from so101_follower_control.runtime_utils import frame_to_pose_dict
+
+SO101_CARTESIAN_LINEAR_UNIT = 'm'
+_CENTIMETERS_PER_METER = 100.0
 
 
 @dataclass(frozen=True)
@@ -97,6 +104,59 @@ def with_fixed_orientation(
     pose.pose.orientation.z = float(quaternion_xyzw[2])
     pose.pose.orientation.w = float(quaternion_xyzw[3])
     return normalize_pose_stamped(pose)
+
+
+def uses_tool_relative_frame(goal_frame_id: str, tool_frame_id: str) -> bool:
+    return frame_id_to_link_name(goal_frame_id) == frame_id_to_link_name(tool_frame_id)
+
+
+def resolved_goal_pose(
+    transformed_goal: PoseStamped,
+    *,
+    original_frame_id: str,
+    tool_frame_id: str,
+    safe_orientation_xyzw: tuple[float, float, float, float],
+) -> PoseStamped:
+    if uses_tool_relative_frame(original_frame_id, tool_frame_id):
+        return normalize_pose_stamped(transformed_goal)
+    return with_fixed_orientation(transformed_goal, safe_orientation_xyzw)
+
+
+def normalize_goal_frame_id(frame_id: str, default_frame_id: str) -> str:
+    normalized = frame_id.strip()
+    return normalized if normalized else default_frame_id
+
+
+def centimeters_to_cartesian_units(
+    x_cm: float,
+    y_cm: float,
+    z_cm: float,
+) -> tuple[float, float, float]:
+    return (
+        float(x_cm) / _CENTIMETERS_PER_METER,
+        float(y_cm) / _CENTIMETERS_PER_METER,
+        float(z_cm) / _CENTIMETERS_PER_METER,
+    )
+
+
+def point_stamped_from_centimeters(
+    x_cm: float,
+    y_cm: float,
+    z_cm: float,
+    *,
+    frame_id: str,
+    stamp: TimeMsg | None = None,
+) -> PointStamped:
+    stamped = PointStamped()
+    stamped.header.frame_id = frame_id
+    if stamp is not None:
+        stamped.header.stamp = stamp
+    stamped.point.x, stamped.point.y, stamped.point.z = centimeters_to_cartesian_units(
+        x_cm,
+        y_cm,
+        z_cm,
+    )
+    return stamped
 
 
 def clamp_pose_to_bounds(

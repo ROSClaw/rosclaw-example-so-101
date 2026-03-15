@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.8)
+cmake_minimum_required(VERSION 3.10)
 project(so101_pose_registry_interfaces)
 
 find_package(ament_cmake REQUIRED)
@@ -11,6 +11,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/NamedPose.msg"
   "msg/ResolvedCartesianGoal.msg"
   "msg/WorkspaceBounds.msg"
+  "srv/ConvertCartesianCoordinates.srv"
   "srv/DeleteNamedPose.srv"
   "srv/GetNamedPose.srv"
   "srv/ListNamedPoses.srv"

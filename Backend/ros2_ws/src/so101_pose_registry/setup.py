@@ -21,7 +21,6 @@ setup(
     maintainer_email='marcodotio@example.com',
     description='Named pose registry and CLI utilities for the SO-101 follower arm.',
     license='MIT',
-    tests_require=['pytest'],
     entry_points={
         'console_scripts': [
             'pose_registry_node = so101_pose_registry.pose_registry_node:main',

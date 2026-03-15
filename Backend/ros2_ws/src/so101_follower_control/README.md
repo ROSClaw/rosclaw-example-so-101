@@ -14,6 +14,7 @@ This package reuses the existing `so101_ros2` backend:
 - `/follower/gripper_controller/gripper_cmd` (`control_msgs/action/GripperCommand`)
 - `/follower/joint_states` (`sensor_msgs/msg/JointState`)
 - `/follower/cartesian_goal` (`geometry_msgs/msg/PoseStamped`)
+- `/follower/convert_cartesian_coordinates` (`so101_pose_registry_interfaces/srv/ConvertCartesianCoordinates`) converts centimeter XYZ inputs into the SO-101 Cartesian unit system (`m`)
 - `/follower/agent_state` (`std_msgs/msg/String`) JSON summary of current joints, gripper, and tool pose
 - `/follower/gripper_command` (`std_msgs/msg/Float64`) normalized gripper open fraction, where `0.0 = closed` and `1.0 = open`
 - `/follower/open_gripper` (`std_srvs/srv/Trigger`) explicit one-shot open command for agents
@@ -30,6 +31,9 @@ Joint order for arm trajectories:
 The gripper is controlled through the gripper action controller, not as part of the arm trajectory.
 For agent use, prefer `/follower/open_gripper` and `/follower/close_gripper` over the raw action.
 Cartesian goals command the pose of `follower/gripper_frame_link` and are converted into single-point joint trajectories for the arm controller.
+Goals expressed in `follower/base_link` use the configured safe tool orientation. Goals expressed in
+`follower/gripper_frame_link` are treated as true tool-relative commands, so their orientation is preserved
+relative to the current gripper pose.
 
 ## Bringup
 
@@ -58,6 +62,7 @@ Optional launch arguments:
 - `cartesian_goal_duration_sec` default: `3.0`
 - `cartesian_base_frame` default: `follower/base_link`
 - `cartesian_tool_frame` default: `follower/gripper_frame_link`
+- `convert_cartesian_coordinates_service` default: `convert_cartesian_coordinates`
 - `agent_bridge_enabled` default: `true`
 - `agent_state_topic` default: `agent_state` (resolves to `/follower/agent_state`)
 - `agent_state_publish_rate` default: `2.0`
@@ -105,6 +110,20 @@ Send a Cartesian goal to the gripper frame:
 ```bash
 ros2 topic pub --once /follower/cartesian_goal geometry_msgs/msg/PoseStamped \
   "{header: {frame_id: follower/base_link}, pose: {position: {x: 0.391361, y: 0.0, z: 0.226470}, orientation: {x: 0.017206, y: 0.706894, z: 0.017214, w: 0.706900}}}"
+```
+
+Send a tool-relative Cartesian goal 3 cm forward from the current gripper pose:
+
+```bash
+ros2 topic pub --once /follower/cartesian_goal geometry_msgs/msg/PoseStamped \
+  "{header: {frame_id: follower/gripper_frame_link}, pose: {position: {x: 0.03, y: 0.0, z: 0.0}, orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}}}"
+```
+
+Convert centimeter coordinates into the SO-101 Cartesian unit system:
+
+```bash
+ros2 service call /follower/convert_cartesian_coordinates so101_pose_registry_interfaces/srv/ConvertCartesianCoordinates \
+  "{frame_id: follower/base_link, x_cm: 15.0, y_cm: 0.0, z_cm: 22.5}"
 ```
 
 The Cartesian goal node is a lightweight IK bridge. It does not do collision checking or path planning, and it controls the five arm joints only.

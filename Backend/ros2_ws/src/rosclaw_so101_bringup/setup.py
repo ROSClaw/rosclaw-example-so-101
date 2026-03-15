@@ -20,5 +20,4 @@ setup(
     maintainer_email="marcodotio@example.com",
     description="Combined bringup for ROSClaw and the SO-101 follower control stack.",
     license="MIT",
-    tests_require=["pytest"],
 )

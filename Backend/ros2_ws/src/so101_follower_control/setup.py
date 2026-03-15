@@ -23,7 +23,6 @@ setup(
     maintainer_email='marcodotio@example.com',
     description='Standard ROS2 bringup and example clients for the SO-101 follower arm.',
     license='MIT',
-    tests_require=['pytest'],
     entry_points={
         'console_scripts': [
             'joint_trajectory_example = so101_follower_control.joint_trajectory_example:main',

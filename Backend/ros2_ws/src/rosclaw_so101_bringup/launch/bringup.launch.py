@@ -21,7 +21,6 @@ def generate_launch_description() -> LaunchDescription:
             "calibration",
             "robots",
             "so101_follower",
-            "atr-follower.json",
         ]
     )
 
@@ -78,6 +77,7 @@ def generate_launch_description() -> LaunchDescription:
             "resolved_goal_topic",
             "resolve_cartesian_goal_service",
             "move_to_cartesian_goal_service",
+            "convert_cartesian_coordinates_service",
             "agent_bridge_enabled",
             "agent_state_topic",
             "agent_state_publish_rate",
@@ -196,7 +196,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument(
                 "calibration_dir",
                 default_value=follower_calibration_default,
-                description="SO-101 calibration path.",
+                description="SO-101 calibration directory.",
             ),
             DeclareLaunchArgument(
                 "use_degrees",
@@ -280,6 +280,11 @@ def generate_launch_description() -> LaunchDescription:
                 "move_to_cartesian_goal_service",
                 default_value="move_to_cartesian_goal",
                 description="Follower Cartesian move service name.",
+            ),
+            DeclareLaunchArgument(
+                "convert_cartesian_coordinates_service",
+                default_value="convert_cartesian_coordinates",
+                description="Follower Cartesian unit conversion service name.",
             ),
             DeclareLaunchArgument(
                 "agent_bridge_enabled",

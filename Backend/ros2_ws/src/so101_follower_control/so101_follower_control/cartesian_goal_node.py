@@ -5,7 +5,9 @@ from geometry_msgs.msg import PoseStamped
 import json
 import math
 import rclpy
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.duration import Duration as RclpyDuration
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
@@ -16,15 +18,18 @@ from tf2_ros import Buffer, TransformException, TransformListener
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from so101_follower_control.cartesian_goal_runtime import (
+    SO101_CARTESIAN_LINEAR_UNIT,
     CartesianGoalResolution,
     CartesianGoalSafetyConfig,
     WorkspaceBoundsConfig,
     classify_candidate_resolution,
+    normalize_goal_frame_id,
     clamp_pose_to_bounds,
     max_joint_delta,
     pose_distance_m,
+    point_stamped_from_centimeters,
+    resolved_goal_pose,
     pose_stamped_from_pose_dict,
-    with_fixed_orientation,
 )
 from so101_follower_control.cartesian_kinematics import (
     CartesianKinematics,
@@ -34,12 +39,19 @@ from so101_follower_control.cartesian_kinematics import (
 )
 from so101_follower_control.runtime_utils import frame_to_pose_dict
 from so101_pose_registry_interfaces.msg import ResolvedCartesianGoal as ResolvedCartesianGoalMsg
-from so101_pose_registry_interfaces.srv import MoveToCartesianGoal, ResolveCartesianGoal
+from so101_pose_registry_interfaces.srv import (
+    ConvertCartesianCoordinates,
+    MoveToCartesianGoal,
+    ResolveCartesianGoal,
+)
 
 
 class CartesianGoalNode(Node):
     def __init__(self) -> None:
         super().__init__('cartesian_goal_node')
+
+        self._state_callback_group = MutuallyExclusiveCallbackGroup()
+        self._command_callback_group = MutuallyExclusiveCallbackGroup()
 
         self.declare_parameter('goal_topic', 'cartesian_goal')
         self.declare_parameter('trajectory_topic', 'arm_controller/joint_trajectory')
@@ -69,6 +81,10 @@ class CartesianGoalNode(Node):
         self.declare_parameter('resolved_goal_topic', 'resolved_cartesian_goal')
         self.declare_parameter('resolve_cartesian_goal_service', 'resolve_cartesian_goal')
         self.declare_parameter('move_to_cartesian_goal_service', 'move_to_cartesian_goal')
+        self.declare_parameter(
+            'convert_cartesian_coordinates_service',
+            'convert_cartesian_coordinates',
+        )
 
         self._goal_topic = self.get_parameter('goal_topic').get_parameter_value().string_value
         self._trajectory_topic = (
@@ -128,6 +144,9 @@ class CartesianGoalNode(Node):
         self._resolved_goal_topic = str(self.get_parameter('resolved_goal_topic').value)
         self._resolve_service_name = str(self.get_parameter('resolve_cartesian_goal_service').value)
         self._move_service_name = str(self.get_parameter('move_to_cartesian_goal_service').value)
+        self._convert_service_name = str(
+            self.get_parameter('convert_cartesian_coordinates_service').value
+        )
 
         self._tf_buffer: Buffer | None = None
         self._tf_listener: TransformListener | None = None
@@ -173,28 +192,44 @@ class CartesianGoalNode(Node):
             self._resolved_goal_topic,
             resolved_goal_qos,
         )
-        self.create_subscription(PoseStamped, self._goal_topic, self._goal_callback, goal_qos)
+        self.create_subscription(
+            PoseStamped,
+            self._goal_topic,
+            self._goal_callback,
+            goal_qos,
+            callback_group=self._command_callback_group,
+        )
         self.create_subscription(
             JointState,
             self._joint_state_topic,
             self._joint_state_callback,
             joint_state_qos,
+            callback_group=self._state_callback_group,
         )
         self.create_subscription(
             String,
             self._robot_description_topic,
             self._robot_description_callback,
             description_qos,
+            callback_group=self._state_callback_group,
         )
         self.create_service(
             ResolveCartesianGoal,
             self._resolve_service_name,
             self._handle_resolve_cartesian_goal,
+            callback_group=self._command_callback_group,
         )
         self.create_service(
             MoveToCartesianGoal,
             self._move_service_name,
             self._handle_move_to_cartesian_goal,
+            callback_group=self._command_callback_group,
+        )
+        self.create_service(
+            ConvertCartesianCoordinates,
+            self._convert_service_name,
+            self._handle_convert_cartesian_coordinates,
+            callback_group=self._command_callback_group,
         )
 
         self.get_logger().info(
@@ -280,6 +315,20 @@ class CartesianGoalNode(Node):
         response.result = self._resolution_to_msg(resolution)
         return response
 
+    def _handle_convert_cartesian_coordinates(
+        self,
+        request: ConvertCartesianCoordinates.Request,
+        response: ConvertCartesianCoordinates.Response,
+    ) -> ConvertCartesianCoordinates.Response:
+        response.point = point_stamped_from_centimeters(
+            request.x_cm,
+            request.y_cm,
+            request.z_cm,
+            frame_id=normalize_goal_frame_id(request.frame_id, self._cartesian_base_frame),
+        )
+        response.linear_unit = SO101_CARTESIAN_LINEAR_UNIT
+        return response
+
     def _resolve_goal(self, goal: PoseStamped) -> CartesianGoalResolution | None:
         if self._kinematics is None:
             self.get_logger().warn('Rejecting Cartesian goal because robot_description is not ready.')
@@ -323,9 +372,11 @@ class CartesianGoalNode(Node):
             self.get_logger().warn(f'Rejecting Cartesian goal because {reason}.')
             return self._internal_failure_resolution(transformed_goal, reason)
 
-        requested_base_goal = with_fixed_orientation(
+        requested_base_goal = resolved_goal_pose(
             transformed_goal,
-            self._safety.safe_orientation_xyzw,
+            original_frame_id=normalized_goal.header.frame_id,
+            tool_frame_id=self._cartesian_tool_frame,
+            safe_orientation_xyzw=self._safety.safe_orientation_xyzw,
         )
         clamped_goal, workspace_clamp_distance_m = clamp_pose_to_bounds(
             requested_base_goal,
@@ -505,8 +556,14 @@ def duration_from_seconds(seconds: float) -> Duration:
 def main(args=None) -> None:
     rclpy.init(args=args)
     node = CartesianGoalNode()
+    executor = MultiThreadedExecutor(num_threads=2)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
+    except KeyboardInterrupt:
+        pass
     finally:
+        executor.shutdown()
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
