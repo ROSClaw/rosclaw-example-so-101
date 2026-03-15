@@ -1,0 +1,6 @@
+[submodule "Backend/ros2_ws/src/so101_ros2"]
+	path = Backend/ros2_ws/src/so101_ros2
+	url = https://github.com/nimiCurtis/so101_ros2.git
+[submodule "Backend/ros2_ws/src/rosclaw-ros2"]
+	path = Backend/ros2_ws/src/rosclaw-ros2
+	url = https://github.com/ROSClaw/rosclaw-ros2.git

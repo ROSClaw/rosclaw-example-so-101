@@ -1,0 +1,22 @@
+# ROS 2 build artifacts
+Backend/ros2_ws/build/
+Backend/ros2_ws/install/
+Backend/ros2_ws/log/
+Backend/ros2_ws/test_results/
+
+# Python caches
+**/__pycache__/
+**/.pytest_cache/
+**/*.pyc
+**/*.pyo
+**/*.egg-info/
+
+# Editor and OS files
+.DS_Store
+.vscode/
+*.swp
+*.swo
+
+# Coverage
+.coverage
+htmlcov/

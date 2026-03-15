@@ -1,0 +1,32 @@
+# ROSClaw discovery config — SO-101 follower
+# Keeps the manifest focused on the interfaces that matter to the OpenClaw agent.
+
+/**:
+  ros__parameters:
+    robot_name: "SO-101 Follower"
+    robot_namespace: ""
+    publish_interval: 2.0
+    exclude_prefixes:
+      - "/rosout"
+      - "/parameter_events"
+      - "/rosclaw/manifest"
+      - "/rosclaw/get_manifest"
+      - "/_ros2cli_"
+      - "/client_count"
+      - "/connected_clients"
+      - "/follower/controller_manager"
+      - "/follower/arm_controller/controller_state"
+      - "/follower/arm_controller/follow_joint_trajectory/_action"
+      - "/follower/arm_controller/state"
+      - "/follower/arm_controller/transition_event"
+      - "/follower/dynamic_joint_states"
+      - "/follower/gripper_command"
+      - "/follower/gripper_controller/gripper_cmd"
+      - "/follower/gripper_controller/gripper_cmd/_action"
+      - "/follower/gripper_controller/transition_event"
+      - "/follower/joint_commands"
+      - "/follower/joint_state_broadcaster"
+      - "/follower/joint_states_raw"
+      - "/follower/robot_description"
+      - "/tf"
+      - "/tf_static"
