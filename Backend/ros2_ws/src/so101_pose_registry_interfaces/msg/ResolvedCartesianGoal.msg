@@ -1,0 +1,7 @@
+bool accepted
+string reason
+geometry_msgs/PoseStamped requested_pose
+geometry_msgs/PoseStamped resolved_pose
+float64[] joint_positions
+float64 position_error_m
+float64 orientation_error_rad

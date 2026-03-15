@@ -26,6 +26,7 @@
   <depend>so101_description</depend>
   <depend>so101_controller</depend>
   <depend>so101_ros2_bridge</depend>
+  <depend>so101_pose_registry_interfaces</depend>
   <exec_depend>rviz2</exec_depend>
 
   <test_depend>python3-pytest</test_depend>

@@ -1,3 +1,6 @@
+# OpenAI Codex Meta
+.codex
+
 # ROS 2 build artifacts
 Backend/ros2_ws/build/
 Backend/ros2_ws/install/

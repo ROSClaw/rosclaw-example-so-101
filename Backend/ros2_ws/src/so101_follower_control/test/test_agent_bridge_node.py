@@ -50,6 +50,36 @@ def test_build_agent_state_payload_includes_ordered_joint_state_and_pose():
     }
 
 
+def test_build_agent_state_payload_includes_registry_and_resolution_metadata():
+    payload = build_agent_state_payload(
+        joint_names=['shoulder_pan'],
+        joint_positions={'shoulder_pan': 0.25},
+        gripper_joint_name='gripper',
+        gripper_open_fraction=None,
+        tool_pose=None,
+        tool_frame='follower/gripper_frame_link',
+        workspace_bounds={
+            'x_min': -0.3,
+            'x_max': 0.5,
+            'y_min': -0.4,
+            'y_max': 0.4,
+            'z_min': 0.0,
+            'z_max': 0.5,
+        },
+        named_pose_names=['home', 'setup'],
+        current_named_pose='home',
+        last_resolved_cartesian_goal={
+            'accepted': True,
+            'reason': 'resolved to the nearest safe reachable pose',
+        },
+    )
+
+    assert payload['workspace_bounds']['x_min'] == -0.3
+    assert payload['named_pose_names'] == ['home', 'setup']
+    assert payload['current_named_pose'] == 'home'
+    assert payload['last_resolved_cartesian_goal']['accepted'] is True
+
+
 def test_gripper_fraction_to_position_maps_unit_interval_to_joint_space():
     assert math.isclose(
         gripper_fraction_to_position(

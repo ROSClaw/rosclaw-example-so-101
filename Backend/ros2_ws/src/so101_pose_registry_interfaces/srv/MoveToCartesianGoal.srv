@@ -1,0 +1,4 @@
+geometry_msgs/PoseStamped pose
+float64 duration_sec
+---
+so101_pose_registry_interfaces/ResolvedCartesianGoal result

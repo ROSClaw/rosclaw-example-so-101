@@ -1,0 +1,5 @@
+string name
+---
+bool found
+string message
+so101_pose_registry_interfaces/NamedPose pose

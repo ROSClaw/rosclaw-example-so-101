@@ -1,0 +1,6 @@
+string name
+float64 duration_sec
+---
+bool success
+string message
+so101_pose_registry_interfaces/NamedPose pose

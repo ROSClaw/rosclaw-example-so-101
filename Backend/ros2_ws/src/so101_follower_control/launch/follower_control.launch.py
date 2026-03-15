@@ -30,6 +30,9 @@ def generate_launch_description():
     cartesian_goal_duration_sec = LaunchConfiguration('cartesian_goal_duration_sec')
     cartesian_base_frame = LaunchConfiguration('cartesian_base_frame')
     cartesian_tool_frame = LaunchConfiguration('cartesian_tool_frame')
+    resolved_goal_topic = LaunchConfiguration('resolved_goal_topic')
+    resolve_cartesian_goal_service = LaunchConfiguration('resolve_cartesian_goal_service')
+    move_to_cartesian_goal_service = LaunchConfiguration('move_to_cartesian_goal_service')
     agent_bridge_enabled = LaunchConfiguration('agent_bridge_enabled')
     agent_state_topic = LaunchConfiguration('agent_state_topic')
     agent_state_publish_rate = LaunchConfiguration('agent_state_publish_rate')
@@ -39,6 +42,25 @@ def generate_launch_description():
     gripper_closed_position = LaunchConfiguration('gripper_closed_position')
     gripper_open_position = LaunchConfiguration('gripper_open_position')
     gripper_max_effort = LaunchConfiguration('gripper_max_effort')
+    pose_registry_enabled = LaunchConfiguration('pose_registry_enabled')
+    named_pose_catalog_topic = LaunchConfiguration('named_pose_catalog_topic')
+    named_pose_file = LaunchConfiguration('named_pose_file')
+    pose_registry_publish_rate = LaunchConfiguration('pose_registry_publish_rate')
+    pose_registry_move_duration_sec = LaunchConfiguration('pose_registry_move_duration_sec')
+    named_pose_match_tolerance_rad = LaunchConfiguration('named_pose_match_tolerance_rad')
+    workspace_x_min = LaunchConfiguration('workspace_x_min')
+    workspace_x_max = LaunchConfiguration('workspace_x_max')
+    workspace_y_min = LaunchConfiguration('workspace_y_min')
+    workspace_y_max = LaunchConfiguration('workspace_y_max')
+    workspace_z_min = LaunchConfiguration('workspace_z_min')
+    workspace_z_max = LaunchConfiguration('workspace_z_max')
+    max_cartesian_step_m = LaunchConfiguration('max_cartesian_step_m')
+    max_joint_delta_rad = LaunchConfiguration('max_joint_delta_rad')
+    max_best_effort_position_error_m = LaunchConfiguration('max_best_effort_position_error_m')
+    safe_orientation_x = LaunchConfiguration('safe_orientation_x')
+    safe_orientation_y = LaunchConfiguration('safe_orientation_y')
+    safe_orientation_z = LaunchConfiguration('safe_orientation_z')
+    safe_orientation_w = LaunchConfiguration('safe_orientation_w')
 
     follower_rsp_group = GroupAction(
         scoped=True,
@@ -116,6 +138,22 @@ def generate_launch_description():
                 'goal_duration_sec': cartesian_goal_duration_sec,
                 'cartesian_base_frame': cartesian_base_frame,
                 'cartesian_tool_frame': cartesian_tool_frame,
+                'resolved_goal_topic': resolved_goal_topic,
+                'resolve_cartesian_goal_service': resolve_cartesian_goal_service,
+                'move_to_cartesian_goal_service': move_to_cartesian_goal_service,
+                'workspace_x_min': workspace_x_min,
+                'workspace_x_max': workspace_x_max,
+                'workspace_y_min': workspace_y_min,
+                'workspace_y_max': workspace_y_max,
+                'workspace_z_min': workspace_z_min,
+                'workspace_z_max': workspace_z_max,
+                'max_cartesian_step_m': max_cartesian_step_m,
+                'max_joint_delta_rad': max_joint_delta_rad,
+                'max_best_effort_position_error_m': max_best_effort_position_error_m,
+                'safe_orientation_x': safe_orientation_x,
+                'safe_orientation_y': safe_orientation_y,
+                'safe_orientation_z': safe_orientation_z,
+                'safe_orientation_w': safe_orientation_w,
             }
         ],
     )
@@ -139,6 +177,44 @@ def generate_launch_description():
                 'gripper_max_effort': gripper_max_effort,
                 'cartesian_base_frame': cartesian_base_frame,
                 'cartesian_tool_frame': cartesian_tool_frame,
+                'named_pose_catalog_topic': named_pose_catalog_topic,
+                'resolved_goal_topic': resolved_goal_topic,
+                'workspace_x_min': workspace_x_min,
+                'workspace_x_max': workspace_x_max,
+                'workspace_y_min': workspace_y_min,
+                'workspace_y_max': workspace_y_max,
+                'workspace_z_min': workspace_z_min,
+                'workspace_z_max': workspace_z_max,
+            }
+        ],
+    )
+
+    pose_registry_node = Node(
+        package='so101_pose_registry',
+        executable='pose_registry_node',
+        name='pose_registry_node',
+        namespace='follower',
+        output='screen',
+        condition=IfCondition(pose_registry_enabled),
+        parameters=[
+            {
+                'gripper_command_topic': gripper_command_topic,
+                'trajectory_topic': 'arm_controller/joint_trajectory',
+                'catalog_topic': named_pose_catalog_topic,
+                'pose_file': named_pose_file,
+                'catalog_publish_rate': pose_registry_publish_rate,
+                'default_move_duration_sec': pose_registry_move_duration_sec,
+                'named_pose_match_tolerance_rad': named_pose_match_tolerance_rad,
+                'gripper_closed_position': gripper_closed_position,
+                'gripper_open_position': gripper_open_position,
+                'cartesian_base_frame': cartesian_base_frame,
+                'cartesian_tool_frame': cartesian_tool_frame,
+                'workspace_x_min': workspace_x_min,
+                'workspace_x_max': workspace_x_max,
+                'workspace_y_min': workspace_y_min,
+                'workspace_y_max': workspace_y_max,
+                'workspace_z_min': workspace_z_min,
+                'workspace_z_max': workspace_z_max,
             }
         ],
     )
@@ -176,6 +252,9 @@ def generate_launch_description():
                 'cartesian_tool_frame',
                 default_value='follower/gripper_frame_link',
             ),
+            DeclareLaunchArgument('resolved_goal_topic', default_value='resolved_cartesian_goal'),
+            DeclareLaunchArgument('resolve_cartesian_goal_service', default_value='resolve_cartesian_goal'),
+            DeclareLaunchArgument('move_to_cartesian_goal_service', default_value='move_to_cartesian_goal'),
             DeclareLaunchArgument('agent_bridge_enabled', default_value='true'),
             DeclareLaunchArgument('agent_state_topic', default_value='agent_state'),
             DeclareLaunchArgument('agent_state_publish_rate', default_value='2.0'),
@@ -185,10 +264,30 @@ def generate_launch_description():
             DeclareLaunchArgument('gripper_closed_position', default_value='0.0'),
             DeclareLaunchArgument('gripper_open_position', default_value='1.0'),
             DeclareLaunchArgument('gripper_max_effort', default_value='10.0'),
+            DeclareLaunchArgument('pose_registry_enabled', default_value='true'),
+            DeclareLaunchArgument('named_pose_catalog_topic', default_value='named_pose_catalog'),
+            DeclareLaunchArgument('named_pose_file', default_value=os.path.expanduser('~/.ros/so101_follower/named_poses.yaml')),
+            DeclareLaunchArgument('pose_registry_publish_rate', default_value='1.0'),
+            DeclareLaunchArgument('pose_registry_move_duration_sec', default_value='3.0'),
+            DeclareLaunchArgument('named_pose_match_tolerance_rad', default_value='0.08'),
+            DeclareLaunchArgument('workspace_x_min', default_value='-0.3'),
+            DeclareLaunchArgument('workspace_x_max', default_value='0.5'),
+            DeclareLaunchArgument('workspace_y_min', default_value='-0.4'),
+            DeclareLaunchArgument('workspace_y_max', default_value='0.4'),
+            DeclareLaunchArgument('workspace_z_min', default_value='0.0'),
+            DeclareLaunchArgument('workspace_z_max', default_value='0.5'),
+            DeclareLaunchArgument('max_cartesian_step_m', default_value='0.25'),
+            DeclareLaunchArgument('max_joint_delta_rad', default_value='1.1'),
+            DeclareLaunchArgument('max_best_effort_position_error_m', default_value='0.08'),
+            DeclareLaunchArgument('safe_orientation_x', default_value='0.0'),
+            DeclareLaunchArgument('safe_orientation_y', default_value='0.707107'),
+            DeclareLaunchArgument('safe_orientation_z', default_value='0.0'),
+            DeclareLaunchArgument('safe_orientation_w', default_value='0.707107'),
             follower_rsp_group,
             follower_bridge_node,
             cartesian_goal_node,
             agent_bridge_node,
+            pose_registry_node,
             delayed_controller_manager,
             delayed_spawn_controllers,
             rviz_node,

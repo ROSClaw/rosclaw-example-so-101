@@ -1,0 +1,8 @@
+string name
+bool overwrite
+bool use_gripper_open_fraction
+float64 gripper_open_fraction
+---
+bool success
+string message
+so101_pose_registry_interfaces/NamedPose pose

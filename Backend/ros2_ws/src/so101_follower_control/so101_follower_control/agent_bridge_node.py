@@ -17,79 +17,14 @@ from so101_follower_control.cartesian_kinematics import (
     CartesianKinematics,
     frame_id_to_link_name,
 )
-
-
-def frame_to_pose_dict(frame) -> dict[str, dict[str, float]]:
-    quaternion = frame.M.GetQuaternion()
-    return {
-        'position': {
-            'x': float(frame.p[0]),
-            'y': float(frame.p[1]),
-            'z': float(frame.p[2]),
-        },
-        'orientation': {
-            'x': float(quaternion[0]),
-            'y': float(quaternion[1]),
-            'z': float(quaternion[2]),
-            'w': float(quaternion[3]),
-        },
-    }
-
-
-def build_agent_state_payload(
-    *,
-    joint_names: Iterable[str],
-    joint_positions: dict[str, float],
-    gripper_joint_name: str,
-    gripper_open_fraction: float | None,
-    tool_pose: dict[str, dict[str, float]] | None,
-    tool_frame: str,
-) -> dict[str, object]:
-    ordered_joint_names = list(joint_names)
-    payload: dict[str, object] = {
-        'joint_order': ordered_joint_names,
-        'joint_positions': {
-            name: float(joint_positions[name])
-            for name in ordered_joint_names
-            if name in joint_positions
-        },
-    }
-    if gripper_joint_name in joint_positions:
-        payload['gripper_position'] = float(joint_positions[gripper_joint_name])
-    if gripper_open_fraction is not None:
-        payload['gripper_open_fraction'] = float(gripper_open_fraction)
-    if tool_pose is not None:
-        payload['tool_pose'] = {
-            'frame_id': tool_frame,
-            **tool_pose,
-        }
-    return payload
-
-
-def clamp_unit_interval(value: float) -> float:
-    return max(0.0, min(1.0, value))
-
-
-def gripper_fraction_to_position(
-    *,
-    open_fraction: float,
-    closed_position: float,
-    open_position: float,
-) -> float:
-    fraction = clamp_unit_interval(open_fraction)
-    return closed_position + ((open_position - closed_position) * fraction)
-
-
-def gripper_position_to_fraction(
-    *,
-    position: float,
-    closed_position: float,
-    open_position: float,
-) -> float | None:
-    span = open_position - closed_position
-    if abs(span) <= 1e-9:
-        return None
-    return clamp_unit_interval((position - closed_position) / span)
+from so101_follower_control.runtime_utils import (
+    build_agent_state_payload,
+    clamp_unit_interval,
+    frame_to_pose_dict,
+    gripper_fraction_to_position,
+    gripper_position_to_fraction,
+    workspace_bounds_to_dict,
+)
 
 
 class AgentBridgeNode(Node):
@@ -110,6 +45,14 @@ class AgentBridgeNode(Node):
         self.declare_parameter('gripper_max_effort', 10.0)
         self.declare_parameter('cartesian_base_frame', 'follower/base_link')
         self.declare_parameter('cartesian_tool_frame', 'follower/gripper_frame_link')
+        self.declare_parameter('named_pose_catalog_topic', 'named_pose_catalog')
+        self.declare_parameter('resolved_goal_topic', 'resolved_cartesian_goal')
+        self.declare_parameter('workspace_x_min', -0.3)
+        self.declare_parameter('workspace_x_max', 0.5)
+        self.declare_parameter('workspace_y_min', -0.4)
+        self.declare_parameter('workspace_y_max', 0.4)
+        self.declare_parameter('workspace_z_min', 0.0)
+        self.declare_parameter('workspace_z_max', 0.5)
 
         self._joint_state_topic = self.get_parameter('joint_state_topic').value
         self._robot_description_topic = self.get_parameter('robot_description_topic').value
@@ -125,11 +68,24 @@ class AgentBridgeNode(Node):
         self._gripper_max_effort = float(self.get_parameter('gripper_max_effort').value)
         self._cartesian_base_frame = self.get_parameter('cartesian_base_frame').value
         self._cartesian_tool_frame = self.get_parameter('cartesian_tool_frame').value
+        self._named_pose_catalog_topic = self.get_parameter('named_pose_catalog_topic').value
+        self._resolved_goal_topic = self.get_parameter('resolved_goal_topic').value
+        self._workspace_bounds = workspace_bounds_to_dict(
+            x_min=float(self.get_parameter('workspace_x_min').value),
+            x_max=float(self.get_parameter('workspace_x_max').value),
+            y_min=float(self.get_parameter('workspace_y_min').value),
+            y_max=float(self.get_parameter('workspace_y_max').value),
+            z_min=float(self.get_parameter('workspace_z_min').value),
+            z_max=float(self.get_parameter('workspace_z_max').value),
+        )
 
         self._joint_order: list[str] = []
         self._joint_positions: dict[str, float] = {}
         self._last_robot_description: str | None = None
         self._kinematics: CartesianKinematics | None = None
+        self._named_pose_names: list[str] = []
+        self._current_named_pose: str | None = None
+        self._last_resolved_cartesian_goal: dict[str, object] | None = None
         self._gripper_action = ActionClient(self, GripperCommand, self._gripper_action_name)
 
         joint_state_qos = QoSProfile(
@@ -147,6 +103,12 @@ class AgentBridgeNode(Node):
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
             reliability=ReliabilityPolicy.RELIABLE,
+        )
+        transient_state_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
 
         self.create_subscription(
@@ -166,6 +128,18 @@ class AgentBridgeNode(Node):
             self._gripper_command_topic,
             self._gripper_command_callback,
             10,
+        )
+        self.create_subscription(
+            String,
+            self._named_pose_catalog_topic,
+            self._named_pose_catalog_callback,
+            transient_state_qos,
+        )
+        self.create_subscription(
+            String,
+            self._resolved_goal_topic,
+            self._resolved_goal_callback,
+            transient_state_qos,
         )
         self.create_service(Trigger, self._open_gripper_service, self._handle_open_gripper)
         self.create_service(Trigger, self._close_gripper_service, self._handle_close_gripper)
@@ -215,6 +189,49 @@ class AgentBridgeNode(Node):
             position=position,
             source=f'fraction command {clamp_unit_interval(open_fraction):.3f}',
         )
+
+    def _named_pose_catalog_callback(self, msg: String) -> None:
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError as exc:
+            self.get_logger().warn(f'Ignoring named pose catalog update because JSON is invalid: {exc}')
+            return
+
+        pose_names = payload.get('pose_names')
+        if isinstance(pose_names, list):
+            self._named_pose_names = [
+                str(name).strip()
+                for name in pose_names
+                if str(name).strip()
+            ]
+        current_named_pose = payload.get('current_named_pose')
+        self._current_named_pose = (
+            str(current_named_pose).strip()
+            if isinstance(current_named_pose, str) and str(current_named_pose).strip()
+            else None
+        )
+        workspace_bounds = payload.get('workspace_bounds')
+        if isinstance(workspace_bounds, dict):
+            try:
+                self._workspace_bounds = workspace_bounds_to_dict(
+                    x_min=float(workspace_bounds.get('x_min', self._workspace_bounds['x_min'])),
+                    x_max=float(workspace_bounds.get('x_max', self._workspace_bounds['x_max'])),
+                    y_min=float(workspace_bounds.get('y_min', self._workspace_bounds['y_min'])),
+                    y_max=float(workspace_bounds.get('y_max', self._workspace_bounds['y_max'])),
+                    z_min=float(workspace_bounds.get('z_min', self._workspace_bounds['z_min'])),
+                    z_max=float(workspace_bounds.get('z_max', self._workspace_bounds['z_max'])),
+                )
+            except (TypeError, ValueError):
+                self.get_logger().warn('Ignoring named pose catalog workspace bounds because values are invalid.')
+
+    def _resolved_goal_callback(self, msg: String) -> None:
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError as exc:
+            self.get_logger().warn(f'Ignoring resolved goal update because JSON is invalid: {exc}')
+            return
+        if isinstance(payload, dict):
+            self._last_resolved_cartesian_goal = payload
 
     def _handle_open_gripper(
         self,
@@ -337,6 +354,10 @@ class AgentBridgeNode(Node):
             gripper_open_fraction=gripper_open_fraction,
             tool_pose=tool_pose,
             tool_frame=self._cartesian_tool_frame,
+            workspace_bounds=self._workspace_bounds,
+            named_pose_names=self._named_pose_names,
+            current_named_pose=self._current_named_pose,
+            last_resolved_cartesian_goal=self._last_resolved_cartesian_goal,
         )
 
         msg = String()
