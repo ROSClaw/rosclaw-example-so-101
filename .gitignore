@@ -20,6 +20,18 @@ Backend/ros2_ws/test_results/
 *.swp
 *.swo
 
+# Xcode and SwiftPM build metadata
+DerivedData/
+**/.build/
+**/.swiftpm/
+**/xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xcbkptlist
+
+# Local assistant/editor metadata
+**/.claude/
+
 # Coverage
 .coverage
 htmlcov/
