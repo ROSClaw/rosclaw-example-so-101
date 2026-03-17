@@ -37,6 +37,10 @@ def test_build_agent_state_payload_includes_ordered_joint_state_and_pose():
             'orientation': {'x': 0.0, 'y': 0.0, 'z': 0.0, 'w': 1.0},
         },
         tool_frame='follower/gripper_frame_link',
+        tool_pose_status={
+            'stage': 'ready',
+            'summary': 'Tool pose ready.',
+        },
     )
 
     assert payload['joint_order'] == ['shoulder_pan', 'gripper']
@@ -47,6 +51,10 @@ def test_build_agent_state_payload_includes_ordered_joint_state_and_pose():
         'frame_id': 'follower/gripper_frame_link',
         'position': {'x': 1.0, 'y': 2.0, 'z': 3.0},
         'orientation': {'x': 0.0, 'y': 0.0, 'z': 0.0, 'w': 1.0},
+    }
+    assert payload['tool_pose_status'] == {
+        'stage': 'ready',
+        'summary': 'Tool pose ready.',
     }
 
 

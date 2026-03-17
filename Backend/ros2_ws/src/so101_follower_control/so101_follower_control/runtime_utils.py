@@ -74,6 +74,7 @@ def build_agent_state_payload(
     gripper_open_fraction: float | None,
     tool_pose: dict[str, dict[str, float]] | None,
     tool_frame: str,
+    tool_pose_status: dict[str, object] | None = None,
     workspace_bounds: dict[str, float] | None = None,
     named_pose_names: Iterable[str] | None = None,
     current_named_pose: str | None = None,
@@ -97,6 +98,8 @@ def build_agent_state_payload(
             'frame_id': tool_frame,
             **tool_pose,
         }
+    if tool_pose_status is not None:
+        payload['tool_pose_status'] = dict(tool_pose_status)
     if workspace_bounds is not None:
         payload['workspace_bounds'] = dict(workspace_bounds)
     if named_pose_names is not None:

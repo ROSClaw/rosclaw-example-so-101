@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+from datetime import datetime, timezone
 from typing import Iterable
 
 from control_msgs.action import GripperCommand
@@ -86,6 +87,8 @@ class AgentBridgeNode(Node):
         self._named_pose_names: list[str] = []
         self._current_named_pose: str | None = None
         self._last_resolved_cartesian_goal: dict[str, object] | None = None
+        self._last_tool_pose_status_key: tuple[object, ...] | None = None
+        self._has_logged_joint_states = False
         self._gripper_action = ActionClient(self, GripperCommand, self._gripper_action_name)
 
         joint_state_qos = QoSProfile(
@@ -147,15 +150,24 @@ class AgentBridgeNode(Node):
         self.create_timer(max(0.1, 1.0 / max(0.1, self._state_publish_rate)), self._publish_state)
 
         self.get_logger().info(
-            f'Publishing SO-101 agent state on {self._state_topic} and listening for '
-            f'gripper commands on {self._gripper_command_topic}. '
-            f'Open/close services: {self._open_gripper_service}, {self._close_gripper_service}.'
+            f'Publishing SO-101 agent state on {self._state_topic}; '
+            f'joint states from {self._joint_state_topic}; '
+            f'robot description from {self._robot_description_topic}; '
+            f'base/tool frames: {self._cartesian_base_frame} -> {self._cartesian_tool_frame}; '
+            f'gripper commands on {self._gripper_command_topic}; '
+            f'open/close services: {self._open_gripper_service}, {self._close_gripper_service}.'
         )
 
     def _joint_state_callback(self, msg: JointState) -> None:
         self._joint_order = list(msg.name)
         for name, position in zip(msg.name, msg.position):
             self._joint_positions[name] = position
+        if not self._has_logged_joint_states:
+            self._has_logged_joint_states = True
+            self.get_logger().info(
+                'Received initial joint state with joints [%s].'
+                % ', '.join(self._joint_order)
+            )
 
     def _robot_description_callback(self, msg: String) -> None:
         if msg.data == self._last_robot_description:
@@ -170,6 +182,14 @@ class AgentBridgeNode(Node):
                 tool_link=tool_link,
             )
             self._last_robot_description = msg.data
+            self.get_logger().info(
+                'Agent-state FK ready for %s -> %s using joints [%s].'
+                % (
+                    self._kinematics.base_link,
+                    self._kinematics.tool_link,
+                    ', '.join(self._kinematics.joint_names),
+                )
+            )
         except Exception as exc:
             self._kinematics = None
             self.get_logger().warn(f'Failed to initialize agent-state kinematics: {exc}')
@@ -335,10 +355,9 @@ class AgentBridgeNode(Node):
         )
 
     def _publish_state(self) -> None:
-        if not self._joint_order:
-            return
-
         tool_pose = self._compute_tool_pose()
+        tool_pose_status = self._build_tool_pose_status(tool_pose)
+        self._maybe_log_tool_pose_status(tool_pose_status)
         gripper_position = self._joint_positions.get(self._gripper_joint_name)
         gripper_open_fraction = None
         if gripper_position is not None:
@@ -354,6 +373,7 @@ class AgentBridgeNode(Node):
             gripper_open_fraction=gripper_open_fraction,
             tool_pose=tool_pose,
             tool_frame=self._cartesian_tool_frame,
+            tool_pose_status=tool_pose_status,
             workspace_bounds=self._workspace_bounds,
             named_pose_names=self._named_pose_names,
             current_named_pose=self._current_named_pose,
@@ -381,6 +401,82 @@ class AgentBridgeNode(Node):
         except Exception:
             return None
         return frame_to_pose_dict(frame)
+
+    def _build_tool_pose_status(
+        self,
+        tool_pose: dict[str, dict[str, float]] | None,
+    ) -> dict[str, object]:
+        missing_joint_names: list[str] = []
+        if self._kinematics is not None:
+            missing_joint_names = [
+                name for name in self._kinematics.joint_names if name not in self._joint_positions
+            ]
+
+        if not self._joint_order:
+            stage = 'waiting_for_joint_states'
+            summary = (
+                f'Waiting for joint states on {self._joint_state_topic} before the tool pose can '
+                'be computed.'
+            )
+        elif self._last_robot_description is None:
+            stage = 'waiting_for_robot_description'
+            summary = (
+                f'Waiting for robot_description on {self._robot_description_topic} before '
+                'forward kinematics can start.'
+            )
+        elif self._kinematics is None:
+            stage = 'kinematics_unavailable'
+            summary = (
+                'Received robot_description but failed to initialize the forward-kinematics chain.'
+            )
+        elif missing_joint_names:
+            stage = 'waiting_for_required_joints'
+            summary = (
+                'Waiting for required FK joints: %s.'
+                % ', '.join(missing_joint_names)
+            )
+        elif tool_pose is None:
+            stage = 'tool_pose_unavailable'
+            summary = 'Joint states and kinematics are ready, but forward kinematics returned no tool pose.'
+        else:
+            stage = 'ready'
+            position = tool_pose['position']
+            summary = (
+                'Tool pose ready in %s at x=%.3f m, y=%.3f m, z=%.3f m.'
+                % (
+                    self._cartesian_tool_frame,
+                    float(position['x']),
+                    float(position['y']),
+                    float(position['z']),
+                )
+            )
+
+        return {
+            'stage': stage,
+            'summary': summary,
+            'joint_state_received': bool(self._joint_order),
+            'joint_count': len(self._joint_positions),
+            'robot_description_received': self._last_robot_description is not None,
+            'kinematics_ready': self._kinematics is not None,
+            'missing_joint_names': missing_joint_names,
+            'base_frame': self._cartesian_base_frame,
+            'tool_frame': self._cartesian_tool_frame,
+            'updated_at': datetime.now(timezone.utc).isoformat(),
+        }
+
+    def _maybe_log_tool_pose_status(self, status: dict[str, object]) -> None:
+        stage = str(status.get('stage', 'unknown'))
+        summary = str(status.get('summary', ''))
+        missing_joint_names = tuple(status.get('missing_joint_names', []))
+        key = (stage, summary, missing_joint_names)
+        if key == self._last_tool_pose_status_key:
+            return
+
+        self._last_tool_pose_status_key = key
+        if stage in {'kinematics_unavailable', 'tool_pose_unavailable'}:
+            self.get_logger().warn(f'Tool-pose pipeline: {summary}')
+        else:
+            self.get_logger().info(f'Tool-pose pipeline: {summary}')
 
 
 def main(args=None) -> None:
