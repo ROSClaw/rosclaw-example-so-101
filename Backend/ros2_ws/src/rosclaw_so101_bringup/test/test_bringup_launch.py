@@ -26,7 +26,7 @@ def test_launch_file_includes_both_stacks():
     launch_path = Path(__file__).resolve().parents[1] / "launch" / "bringup.launch.py"
     contents = launch_path.read_text()
     assert 'FindPackageShare("rosclaw_bringup")' in contents
-    assert 'FindPackageShare("so101_bringup")' in contents
+    assert 'FindPackageShare("rosclaw_so101_bringup"), "launch", "so101_cameras.launch.py"' in contents
     assert 'FindPackageShare("so101_follower_control")' in contents
 
 
@@ -51,4 +51,8 @@ def test_launch_defaults_enable_cameras_and_perception():
     contents = launch_path.read_text()
     assert re.search(r'DeclareLaunchArgument\(\s*"cameras",\s*default_value="true"', contents)
     assert re.search(r'DeclareLaunchArgument\(\s*"perception",\s*default_value="true"', contents)
+    assert re.search(
+        r'DeclareLaunchArgument\(\s*"front_camera_video_device",\s*default_value="/dev/video2"',
+        contents,
+    )
     assert 'FindPackageShare("rosclaw_so101_bringup"), "config", "perception.yaml"' in contents

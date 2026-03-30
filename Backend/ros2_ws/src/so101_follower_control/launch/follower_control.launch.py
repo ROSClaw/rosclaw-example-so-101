@@ -7,6 +7,31 @@ from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
+
+
+def _follower_bridge_parameter_overrides(
+    port,
+    robot_id,
+    calibration_dir,
+    use_degrees,
+    max_relative_target,
+    disable_torque_on_disconnect,
+    publish_rate,
+):
+    return {
+        'port': ParameterValue(port, value_type=str),
+        'id': ParameterValue(robot_id, value_type=str),
+        'calibration_dir': ParameterValue(calibration_dir, value_type=str),
+        'use_degrees': ParameterValue(use_degrees, value_type=bool),
+        'max_relative_target': ParameterValue(max_relative_target, value_type=int),
+        'disable_torque_on_disconnect': ParameterValue(
+            disable_torque_on_disconnect,
+            value_type=bool,
+        ),
+        'publish_rate': ParameterValue(publish_rate, value_type=float),
+        'type': 'follower',
+    }
 
 
 def generate_launch_description():
@@ -89,16 +114,15 @@ def generate_launch_description():
         output='screen',
         parameters=[
             os.path.join(package_share, 'config', 'follower_bridge.yaml'),
-            {
-                'port': port,
-                'id': robot_id,
-                'calibration_dir': calibration_dir,
-                'use_degrees': use_degrees,
-                'max_relative_target': max_relative_target,
-                'disable_torque_on_disconnect': disable_torque_on_disconnect,
-                'publish_rate': publish_rate,
-                'type': 'follower',
-            },
+            _follower_bridge_parameter_overrides(
+                port,
+                robot_id,
+                calibration_dir,
+                use_degrees,
+                max_relative_target,
+                disable_torque_on_disconnect,
+                publish_rate,
+            ),
         ],
     )
 

@@ -52,10 +52,11 @@ def generate_launch_description() -> LaunchDescription:
     cameras_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution(
-                [FindPackageShare("so101_bringup"), "launch", "include", "camera.launch.py"]
+                [FindPackageShare("rosclaw_so101_bringup"), "launch", "so101_cameras.launch.py"]
             )
         ),
         condition=IfCondition(LaunchConfiguration("cameras")),
+        launch_arguments=_launch_arguments("front_camera_video_device"),
     )
 
     follower_launch = IncludeLaunchDescription(
@@ -174,6 +175,11 @@ def generate_launch_description() -> LaunchDescription:
                 "cameras",
                 default_value="true",
                 description="Launch the SO-101 camera stack.",
+            ),
+            DeclareLaunchArgument(
+                "front_camera_video_device",
+                default_value="/dev/video2",
+                description="Video device path for the SO-101 front USB camera.",
             ),
             DeclareLaunchArgument(
                 "robot_namespace",
