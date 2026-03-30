@@ -35,6 +35,7 @@ Use the system Python 3 package:
 
 ```bash
 source /opt/ros/humble/setup.bash
+pip install 'google-genai>=1.0.0'
 cd Backend/ros2_ws
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH
 colcon build --packages-up-to rosclaw_so101_bringup \
@@ -47,6 +48,7 @@ colcon build --packages-up-to rosclaw_so101_bringup \
 ```bash
 source /opt/ros/humble/setup.bash
 source Backend/ros2_ws/install/setup.bash
+export GEMINI_API_KEY=your-api-key
 ros2 launch rosclaw_so101_bringup bringup.launch.py
 ```
 
@@ -55,6 +57,13 @@ Default SO-101 follower bringup values:
 - `port:=/dev/ttyACM0`
 - `id:=atr-follower`
 - `calibration_dir:=$HOME/.cache/huggingface/lerobot/calibration/robots/so101_follower/atr-follower.json`
+- `cameras:=true`
+- `perception:=true`
+
+The combined bringup now launches the SO-101 camera stack and the ROSClaw
+perception node by default. It expects the USB wrist camera to publish on
+`/follower/cam_front/image_compressed` and fails fast if the Gemini dependency,
+`GEMINI_API_KEY`, or startup camera frames are missing.
 
 ## Agent-Facing Control Surfaces
 

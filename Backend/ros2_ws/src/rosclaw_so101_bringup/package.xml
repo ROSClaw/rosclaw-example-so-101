@@ -10,6 +10,7 @@
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>rosclaw_bringup</exec_depend>
+  <exec_depend>so101_bringup</exec_depend>
   <exec_depend>so101_follower_control</exec_depend>
   <exec_depend>so101_pose_registry</exec_depend>
   <exec_depend>so101_description</exec_depend>

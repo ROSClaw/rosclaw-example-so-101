@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import os
 from pathlib import Path
+import re
 
 
 def _load_launch_module():
@@ -25,6 +26,7 @@ def test_launch_file_includes_both_stacks():
     launch_path = Path(__file__).resolve().parents[1] / "launch" / "bringup.launch.py"
     contents = launch_path.read_text()
     assert 'FindPackageShare("rosclaw_bringup")' in contents
+    assert 'FindPackageShare("so101_bringup")' in contents
     assert 'FindPackageShare("so101_follower_control")' in contents
 
 
@@ -42,3 +44,11 @@ def test_launch_forwards_cartesian_services():
     assert '"resolve_cartesian_goal_service"' in contents
     assert '"move_to_cartesian_goal_service"' in contents
     assert '"convert_cartesian_coordinates_service"' in contents
+
+
+def test_launch_defaults_enable_cameras_and_perception():
+    launch_path = Path(__file__).resolve().parents[1] / "launch" / "bringup.launch.py"
+    contents = launch_path.read_text()
+    assert re.search(r'DeclareLaunchArgument\(\s*"cameras",\s*default_value="true"', contents)
+    assert re.search(r'DeclareLaunchArgument\(\s*"perception",\s*default_value="true"', contents)
+    assert 'FindPackageShare("rosclaw_so101_bringup"), "config", "perception.yaml"' in contents

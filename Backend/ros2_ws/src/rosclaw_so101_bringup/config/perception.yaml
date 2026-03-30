@@ -1,0 +1,11 @@
+/**:
+  ros__parameters:
+    camera_topic: "/follower/cam_front/image_compressed"
+    frame_rate: 1.0
+    api_mode: "live"
+    gemini_model: "models/gemini-2.5-flash-native-audio-preview-12-2025"
+    api_key_env: "GEMINI_API_KEY"
+    inference_timeout: 20.0
+    max_retries: 2
+    empty_cycles_before_refresh: 4
+    startup_frame_timeout_sec: 10.0

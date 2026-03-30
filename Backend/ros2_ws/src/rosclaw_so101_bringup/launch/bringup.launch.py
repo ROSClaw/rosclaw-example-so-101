@@ -2,6 +2,7 @@
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import EnvironmentVariable, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
@@ -46,6 +47,15 @@ def generate_launch_description() -> LaunchDescription:
             "robot_key",
             "robot_id",
         ),
+    )
+
+    cameras_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution(
+                [FindPackageShare("so101_bringup"), "launch", "include", "camera.launch.py"]
+            )
+        ),
+        condition=IfCondition(LaunchConfiguration("cameras")),
     )
 
     follower_launch = IncludeLaunchDescription(
@@ -135,7 +145,9 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument(
                 "perception_config",
-                default_value="",
+                default_value=PathJoinSubstitution(
+                    [FindPackageShare("rosclaw_so101_bringup"), "config", "perception.yaml"]
+                ),
                 description="Optional ROSClaw perception config override.",
             ),
             DeclareLaunchArgument(
@@ -155,8 +167,13 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument(
                 "perception",
-                default_value="false",
+                default_value="true",
                 description="Launch the ROSClaw perception node.",
+            ),
+            DeclareLaunchArgument(
+                "cameras",
+                default_value="true",
+                description="Launch the SO-101 camera stack.",
             ),
             DeclareLaunchArgument(
                 "robot_namespace",
@@ -428,6 +445,7 @@ def generate_launch_description() -> LaunchDescription:
                 default_value="0.707107",
                 description="Fixed safe tool orientation quaternion W component.",
             ),
+            cameras_launch,
             rosclaw_launch,
             follower_launch,
         ]
