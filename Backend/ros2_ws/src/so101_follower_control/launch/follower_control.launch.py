@@ -24,7 +24,7 @@ def _follower_bridge_parameter_overrides(
         'id': ParameterValue(robot_id, value_type=str),
         'calibration_dir': ParameterValue(calibration_dir, value_type=str),
         'use_degrees': ParameterValue(use_degrees, value_type=bool),
-        'max_relative_target': ParameterValue(max_relative_target, value_type=int),
+        'max_relative_target': ParameterValue(max_relative_target, value_type=float),
         'disable_torque_on_disconnect': ParameterValue(
             disable_torque_on_disconnect,
             value_type=bool,
@@ -107,8 +107,8 @@ def generate_launch_description():
     )
 
     follower_bridge_node = Node(
-        package='so101_ros2_bridge',
-        executable='follower_ros2_node',
+        package='so101_follower_control',
+        executable='follower_bridge_node',
         name='so101_follower_ros2_bridge',
         namespace='follower',
         output='screen',

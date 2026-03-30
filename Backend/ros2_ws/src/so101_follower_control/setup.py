@@ -25,6 +25,7 @@ setup(
     license='MIT',
     entry_points={
         'console_scripts': [
+            'follower_bridge_node = so101_follower_control.follower_bridge_node:main',
             'joint_trajectory_example = so101_follower_control.joint_trajectory_example:main',
             'gripper_command_example = so101_follower_control.gripper_command_example:main',
             'joint_state_echo = so101_follower_control.joint_state_echo:main',

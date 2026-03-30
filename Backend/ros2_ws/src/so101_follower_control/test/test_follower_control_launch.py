@@ -36,7 +36,7 @@ def test_follower_bridge_parameter_overrides_use_typed_values():
     assert overrides['port'].value_type is str
     assert overrides['calibration_dir'].value_type is str
     assert overrides['use_degrees'].value_type is bool
-    assert overrides['max_relative_target'].value_type is int
+    assert overrides['max_relative_target'].value_type is float
     assert overrides['disable_torque_on_disconnect'].value_type is bool
     assert overrides['publish_rate'].value_type is float
     assert overrides['type'] == 'follower'
