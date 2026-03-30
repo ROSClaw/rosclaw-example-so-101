@@ -16,7 +16,9 @@ struct ChatStreamView: View {
                             .padding(.top, 40)
                     } else {
                         ForEach(commandFlow.transcript) { entry in
-                            if entry.kind == .parsedCommand &&
+                            if entry.kind == .perception {
+                                PerceptionBubbleView(entry: entry)
+                            } else if entry.kind == .parsedCommand &&
                                 commandFlow.pendingPreview != nil &&
                                 spatial.immersiveSpaceState != .open &&
                                 entry.id == commandFlow.transcript.last(where: { $0.kind == .parsedCommand })?.id {

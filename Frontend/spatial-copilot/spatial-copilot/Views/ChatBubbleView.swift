@@ -36,6 +36,7 @@ struct ChatBubbleView: View {
         case .parsedCommand: return .purple.opacity(0.15)
         case .feedback: return .green.opacity(0.15)
         case .system: return .gray.opacity(0.15)
+        case .perception: return .cyan.opacity(0.15)
         }
     }
 

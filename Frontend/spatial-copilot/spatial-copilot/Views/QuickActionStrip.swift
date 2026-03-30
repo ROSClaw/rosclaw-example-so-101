@@ -45,6 +45,11 @@ struct QuickActionStrip: View {
                     }
                 }
 
+                // Look (perception snapshot)
+                quickButton("Look", icon: "eye.fill", tint: .cyan) {
+                    Task { await commandFlow.requestPerceptionSnapshot() }
+                }
+
                 // Spatial toggle
                 quickButton(
                     spatial.immersiveSpaceState == .open ? "Exit Spatial" : "Spatial",

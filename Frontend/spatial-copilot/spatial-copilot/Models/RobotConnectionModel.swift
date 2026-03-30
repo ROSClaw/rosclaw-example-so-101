@@ -225,6 +225,11 @@ final class RobotConnectionModel {
         )
     }
 
+    func fetchPerceptionSnapshot() async throws -> PerceptionSnapshot {
+        try await ensureDirectBridgeConnected()
+        return try await directBridge.perceptionSnapshot()
+    }
+
     func stopJointPreviewStreaming() async {
         guard directBridgeConnected else { return }
         try? await directBridge.publish(

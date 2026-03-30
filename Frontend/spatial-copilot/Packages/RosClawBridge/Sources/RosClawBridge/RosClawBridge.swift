@@ -238,6 +238,61 @@ public actor RosClawBridge {
         throw BridgeError.decodingFailed
     }
 
+    // MARK: - ros2_perception_snapshot
+
+    public func perceptionSnapshot(
+        topic: String = "/rosclaw/perception",
+        timeoutMs: Int = 5_000
+    ) async throws -> PerceptionSnapshot {
+        let payload = try await subscribeOnce(
+            topic: topic,
+            type: "rosclaw_msgs/msg/PerceptionSnapshot",
+            timeoutMs: timeoutMs
+        )
+
+        let summary = (payload["summary"] as? String) ?? ""
+        let imageMimeType = (payload["image_mime_type"] as? String) ?? "image/jpeg"
+
+        let imageData: Data
+        if let base64 = payload["image_data"] as? String {
+            guard let decoded = Data(base64Encoded: base64) else {
+                throw BridgeError.decodingFailed
+            }
+            imageData = decoded
+        } else if let intArray = payload["image_data"] as? [Int] {
+            imageData = Data(intArray.map { UInt8(clamping: $0) })
+        } else {
+            imageData = Data()
+        }
+
+        let objects: [PerceptionObject] = (payload["objects"] as? [[String: Any]])?.map { obj in
+            PerceptionObject(
+                label: (obj["label"] as? String) ?? "",
+                position: (obj["position"] as? String) ?? "",
+                distanceM: (obj["distance_m"] as? Double) ?? 0.0
+            )
+        } ?? []
+
+        let obstacles: [PerceptionObstacle] = (payload["obstacles"] as? [[String: Any]])?.map { obs in
+            PerceptionObstacle(
+                label: (obs["label"] as? String) ?? "",
+                direction: (obs["direction"] as? String) ?? "",
+                distanceM: (obs["distance_m"] as? Double) ?? 0.0
+            )
+        } ?? []
+
+        let alerts = (payload["alerts"] as? [String]) ?? []
+
+        return PerceptionSnapshot(
+            summary: summary,
+            imageMimeType: imageMimeType,
+            imageData: imageData,
+            objects: objects,
+            obstacles: obstacles,
+            alerts: alerts
+        )
+    }
+
     // MARK: - Emergency stop (§10.1 — bypasses agent reasoning)
 
     public func stopArmTrajectory() async {

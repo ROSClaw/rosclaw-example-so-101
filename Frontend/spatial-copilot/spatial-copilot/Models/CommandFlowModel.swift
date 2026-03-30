@@ -16,12 +16,19 @@ enum AppPhase: String, Sendable {
 
 struct TranscriptEntry: Identifiable, Sendable {
     enum Kind: Sendable {
-        case userInput, parsedCommand, feedback, error, system
+        case userInput, parsedCommand, feedback, error, system, perception
     }
     let id = UUID()
     let kind: Kind
     let text: String
+    let perceptionSnapshot: PerceptionSnapshot?
     let timestamp: Date = Date()
+
+    init(kind: Kind, text: String, perceptionSnapshot: PerceptionSnapshot? = nil) {
+        self.kind = kind
+        self.text = text
+        self.perceptionSnapshot = perceptionSnapshot
+    }
 }
 
 struct PendingCartesianClarificationDraft: Sendable, Equatable {
@@ -241,6 +248,27 @@ final class CommandFlowModel {
         pendingPreview = nil
         pendingClarification = nil
     }
+// MARK: - Perception
+
+    func requestPerceptionSnapshot() async {
+        appendTranscript(.system, "Fetching perception snapshot…")
+        do {
+            guard let connectionModel else {
+                appendTranscript(.error, "Perception failed: no connection")
+                return
+            }
+            let snapshot = try await connectionModel.fetchPerceptionSnapshot()
+            transcript.append(TranscriptEntry(
+                kind: .perception,
+                text: snapshot.summary,
+                perceptionSnapshot: snapshot
+            ))
+            if transcript.count > 200 { transcript.removeFirst(transcript.count - 200) }
+        } catch {
+            appendTranscript(.error, "Perception failed: \(error.localizedDescription)")
+        }
+    }
+
 // MARK: - Transcript
 
     func appendTranscript(_ kind: TranscriptEntry.Kind, _ text: String) {
