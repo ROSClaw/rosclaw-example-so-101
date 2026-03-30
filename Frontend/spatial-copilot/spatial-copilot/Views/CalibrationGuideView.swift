@@ -50,24 +50,19 @@ struct CalibrationGuideView: View {
                 "scope",
                 .cyan,
                 "Place the robot base",
-                "Move the stylus over a recognized table or floor surface. The orange marker will stick to the surface. Press the main stylus button to confirm the base."
+                "Move the stylus over a recognized table or floor surface. The point turns green when the base can be placed and red when it cannot. Press the main stylus button to confirm the base."
             )
         case .placingGripper:
             (
                 "move.3d",
                 .cyan,
                 "Place the gripper point",
-                "Move the stylus to the robot gripper location in free space, then press the main stylus button to finish calibration."
+                "Move the stylus to the real robot gripper in free space. The virtual gripper follows the stylus and the point stays green only inside the safe zone. Press the main stylus button again to finish calibration."
             )
         case .previewing:
             nil
         case .confirming:
-            (
-                "checkmark.circle",
-                .green,
-                "Confirm the Cartesian move",
-                "The green marker shows the resolved gripper target. Use the in-scene query or the stylus secondary button to cancel."
-            )
+            nil
         }
     }
 }

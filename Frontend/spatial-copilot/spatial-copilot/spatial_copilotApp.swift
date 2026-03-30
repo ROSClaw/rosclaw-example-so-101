@@ -6,6 +6,8 @@ struct SpatialCopilotApp: App {
     @State private var coordinator = AppCoordinator()
 
     var body: some Scene {
+        let immersivePanelActive = coordinator.spatial.immersiveSpaceState == .open
+
         // Compact floating copilot panel
         WindowGroup("Copilot", id: "copilot-panel") {
             CopilotPanelView()
@@ -16,10 +18,12 @@ struct SpatialCopilotApp: App {
                 .environment(coordinator.spatial)
                 .environment(coordinator.stylus)
                 .frame(
-                    minWidth: 500,
-                    maxWidth: .infinity,
-                    minHeight: 700,
-                    maxHeight: .infinity,
+                    minWidth: immersivePanelActive ? 360 : 500,
+                    idealWidth: immersivePanelActive ? 380 : 500,
+                    maxWidth: immersivePanelActive ? 420 : .infinity,
+                    minHeight: immersivePanelActive ? 220 : 700,
+                    idealHeight: immersivePanelActive ? 240 : 700,
+                    maxHeight: immersivePanelActive ? 260 : .infinity,
                     alignment: .topLeading
                 )
                 .task {
@@ -39,6 +43,7 @@ struct SpatialCopilotApp: App {
                 .environment(coordinator.spatial)
                 .environment(coordinator.stylus)
                 .onAppear {
+                    coordinator.commandFlow.enterImmersiveMode()
                     coordinator.spatial.immersiveSpaceState = .open
                 }
                 .onDisappear {

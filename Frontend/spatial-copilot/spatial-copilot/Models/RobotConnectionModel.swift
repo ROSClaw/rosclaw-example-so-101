@@ -25,7 +25,10 @@ final class RobotConnectionModel {
 
     let robotExecutor = GatewayRobotExecutor()
     private let isoFormatter = ISO8601DateFormatter()
+    private let directBridge = RosClawBridge()
     private var hasBootstrapped = false
+    private var directBridgeConnected = false
+    private var directBridgeConfiguration: RosClawBridge.Configuration?
 
     /// Weak references to sibling models for cross-model updates.
     weak var stateModel: RobotStateModel?
@@ -53,8 +56,12 @@ final class RobotConnectionModel {
                 endpoint.password != nil
             remoteTLSConfigured = endpoint.gatewayURL.scheme?.lowercased() == "wss"
             remoteStateSummary = nil
+            await configureDirectBridgeIfNeeded(environment: ProcessInfo.processInfo.environment, gatewayURL: endpoint.gatewayURL)
 
-            if forceRecreate { await robotExecutor.disconnect() }
+            if forceRecreate {
+                await robotExecutor.disconnect()
+                await disconnectDirectBridge()
+            }
 
             stateModel?.robotState.connectionState = .connecting
             stateModel?.robotState.enabled = false
@@ -127,14 +134,11 @@ final class RobotConnectionModel {
         stateModel.robotState.estopLatched = snapshot.estopLatched
 
         if let state = snapshot.state {
-            remotePoseFlowSummary = state.toolPoseStatus?.summary
-                ?? (state.toolPose?.position != nil
-                    ? "Pose data received from ROSClaw and processed by the app."
-                    : snapshot.stateSummary ?? "Waiting for pose data from ROSClaw.")
             stateModel.robotState.enabled = !snapshot.estopLatched
             stateModel.robotState.mode = snapshot.estopLatched ? .faulted : .idle
             stateModel.robotState.fault = snapshot.estopLatched ? "Emergency stop latched" : nil
             stateModel.applyFollowerState(state, estopLatched: snapshot.estopLatched)
+            remotePoseFlowSummary = stateModel.toolPoseStatusSummary
             // State-level values override capability defaults
             if let stateWorkspaceBounds = state.workspaceBounds {
                 workspaceBounds = stateWorkspaceBounds
@@ -180,11 +184,8 @@ final class RobotConnectionModel {
         guard let stateModel else { return }
         if let state = result.state {
             remoteStateSummary = nil
-            remotePoseFlowSummary = state.toolPoseStatus?.summary
-                ?? (state.toolPose?.position != nil
-                    ? "Pose data received from ROSClaw and processed by the app."
-                    : "Command completed, but tool pose is still unavailable.")
             stateModel.applyFollowerState(state, estopLatched: result.estopLatched)
+            remotePoseFlowSummary = stateModel.toolPoseStatusSummary
         } else {
             stateModel.robotState.estopLatched = result.estopLatched
             stateModel.robotState.enabled = !result.estopLatched
@@ -209,5 +210,119 @@ final class RobotConnectionModel {
 
     var supportsHomeCommand: Bool {
         supportedPresetSummary.contains { $0.caseInsensitiveCompare("home") == .orderedSame }
+    }
+
+    func streamJointPreview(
+        _ jointPositions: [String: Double],
+        durationSec: Double
+    ) async throws {
+        try await ensureDirectBridgeConnected()
+        let positions = followerJointNames.map { jointPositions[$0] ?? stateModel?.robotState.jointPositions[$0] ?? 0.0 }
+        try await directBridge.publish(
+            topic: FollowerTopics.armTrajectoryTopic,
+            type: "trajectory_msgs/msg/JointTrajectory",
+            msg: makeJointTrajectoryMessage(positions: positions, durationSec: durationSec)
+        )
+    }
+
+    func stopJointPreviewStreaming() async {
+        guard directBridgeConnected else { return }
+        try? await directBridge.publish(
+            topic: FollowerTopics.armTrajectoryTopic,
+            type: "trajectory_msgs/msg/JointTrajectory",
+            msg: makeEmptyJointTrajectoryMessage()
+        )
+    }
+
+    private func ensureDirectBridgeConnected() async throws {
+        if directBridgeConfiguration == nil {
+            await configureDirectBridgeIfNeeded(
+                environment: ProcessInfo.processInfo.environment,
+                gatewayURL: nil
+            )
+        }
+        guard let configuration = directBridgeConfiguration else {
+            throw DirectBridgeError.unavailable(
+                "Direct joint streaming requires rosbridge. Set ROSCLAW_ROSBRIDGE_HOST or ROSBRIDGE_HOST, or expose rosbridge on the robot host."
+            )
+        }
+        if !directBridgeConnected {
+            await directBridge.updateConfiguration(configuration)
+            do {
+                try await directBridge.connect()
+                directBridgeConnected = true
+            } catch {
+                directBridgeConnected = false
+                throw DirectBridgeError.unavailable(
+                    "Direct rosbridge connection failed: \(error.localizedDescription)"
+                )
+            }
+        }
+    }
+
+    private func configureDirectBridgeIfNeeded(
+        environment: [String: String],
+        gatewayURL: URL?
+    ) async {
+        guard let configuration = Self.resolveDirectBridgeConfiguration(
+            environment: environment,
+            gatewayURL: gatewayURL
+        ) else {
+            directBridgeConfiguration = nil
+            directBridgeConnected = false
+            return
+        }
+        directBridgeConfiguration = configuration
+        await directBridge.updateConfiguration(configuration)
+    }
+
+    private func disconnectDirectBridge() async {
+        await directBridge.disconnect()
+        directBridgeConnected = false
+    }
+
+    private static func resolveDirectBridgeConfiguration(
+        environment: [String: String],
+        gatewayURL: URL?
+    ) -> RosClawBridge.Configuration? {
+        let explicitHost =
+            Self.cleaned(environment["ROSCLAW_ROSBRIDGE_HOST"]) ??
+            Self.cleaned(environment["ROSBRIDGE_HOST"])
+        let fallbackHost =
+            Self.cleaned(environment["ROSCLAW_AGENT_IP"]) ??
+            Self.cleaned(gatewayURL?.host)
+        guard let host = explicitHost ?? fallbackHost, !host.isEmpty else {
+            return nil
+        }
+
+        let explicitPort =
+            Self.cleaned(environment["ROSCLAW_ROSBRIDGE_PORT"]) ??
+            Self.cleaned(environment["ROSBRIDGE_PORT"])
+        let port = Int(explicitPort ?? "") ?? 9090
+        let namespace =
+            Self.cleaned(environment["ROSCLAW_ROSBRIDGE_NAMESPACE"]) ??
+            Self.cleaned(environment["ROSBRIDGE_NAMESPACE"]) ??
+            "/follower"
+
+        return RosClawBridge.Configuration(host: host, port: port, namespace: namespace)
+    }
+
+    private static func cleaned(_ raw: String?) -> String? {
+        guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
+    }
+}
+
+private enum DirectBridgeError: LocalizedError {
+    case unavailable(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .unavailable(let message):
+            return message
+        }
     }
 }

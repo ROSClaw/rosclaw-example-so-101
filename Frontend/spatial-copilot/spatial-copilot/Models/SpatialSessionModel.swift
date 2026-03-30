@@ -22,13 +22,34 @@ final class SpatialSessionModel {
         case confirming
     }
 
-    struct SpatialCalibrationPayload {
+    enum SpatialControlMode: String, Sendable {
+        case paused
+        case realToSim
+        case simToRealHolding
+    }
+
+    enum SpatialTargetInvalidReason: String, Sendable {
+        case noSurface
+        case unavailable
+        case outsideWorkspace
+        case ikError
+    }
+
+    struct PendingBasePlacement: Sendable {
         let selectedSurfaceAnchorID: UUID
         let surfaceNormal: SIMD3<Float>
-        let baseWorldPoint: SIMD3<Float>
+        var baseWorldPoint: SIMD3<Float>
+        var robotToWorldTransform: simd_float4x4
+    }
+
+    struct SpatialCalibrationPayload: Sendable {
+        let selectedSurfaceAnchorID: UUID
+        var worldAnchorID: UUID?
+        let surfaceNormal: SIMD3<Float>
+        var baseWorldPoint: SIMD3<Float>
         let gripperWorldPoint: SIMD3<Float>
-        let robotToWorldTransform: simd_float4x4
-        let worldToRobotTransform: simd_float4x4
+        var robotToWorldTransform: simd_float4x4
+        var worldToRobotTransform: simd_float4x4
     }
 
     struct SpatialPreviewState {
@@ -39,17 +60,18 @@ final class SpatialSessionModel {
         let previewJointPositions: [String: Double]
         let previewEndEffectorWorldPoint: SIMD3<Float>
         let positionErrorMeters: Double
+        let isValid: Bool
+        let invalidReason: SpatialTargetInvalidReason?
     }
 
     var immersiveSpaceState: ImmersiveSpaceState = .closed
     var onboardingStage: SpatialOnboardingStage = .needsStylus
+    var controlMode: SpatialControlMode = .paused
     var calibrationPayload: SpatialCalibrationPayload?
+    var pendingBasePlacement: PendingBasePlacement?
     var previewState: SpatialPreviewState?
     var pendingSpatialRobotGoal: SIMD3<Float>?
     var lastConfirmedSpatialRobotGoal: SIMD3<Float>?
-    var pendingSurfaceAnchorID: UUID?
-    var pendingSurfaceNormal: SIMD3<Float>?
-    var pendingBaseWorldPoint: SIMD3<Float>?
     var pendingGripperWorldPoint: SIMD3<Float>?
     var pendingGoalWorldPoint: SIMD3<Float>?
 
@@ -61,21 +83,44 @@ final class SpatialSessionModel {
         calibrationPayload != nil
     }
 
+    var pendingSurfaceAnchorID: UUID? {
+        pendingBasePlacement?.selectedSurfaceAnchorID
+    }
+
+    var pendingSurfaceNormal: SIMD3<Float>? {
+        pendingBasePlacement?.surfaceNormal
+    }
+
+    var pendingBaseWorldPoint: SIMD3<Float>? {
+        pendingBasePlacement?.baseWorldPoint
+    }
+
     var spatialCalibrationWorldPosition: SIMD3<Float>? {
-        calibrationPayload?.baseWorldPoint ?? pendingBaseWorldPoint
+        calibrationPayload?.baseWorldPoint ?? pendingBasePlacement?.baseWorldPoint
     }
 
     func synchronizeRequirements(stylusConnected: Bool, hasRobotToolPose: Bool) {
         if calibrationPayload != nil {
-            if !stylusConnected {
+            guard stylusConnected else {
                 onboardingStage = .needsStylus
+                controlMode = .paused
+                return
+            }
+            guard hasRobotToolPose else {
+                onboardingStage = .needsRobotState
+                controlMode = .paused
                 return
             }
             if onboardingStage != .confirming {
                 onboardingStage = .previewing
             }
+            if controlMode != .simToRealHolding {
+                controlMode = .realToSim
+            }
             return
         }
+
+        controlMode = .paused
         if !stylusConnected {
             onboardingStage = .needsStylus
             return
@@ -84,71 +129,90 @@ final class SpatialSessionModel {
             onboardingStage = .needsRobotState
             return
         }
-        onboardingStage = pendingBaseWorldPoint == nil ? .placingBase : .placingGripper
+        onboardingStage = pendingBasePlacement == nil ? .placingBase : .placingGripper
     }
 
     func registerBasePlacement(
         surfaceAnchorID: UUID,
         surfaceNormal: SIMD3<Float>,
-        worldPoint: SIMD3<Float>
+        worldPoint: SIMD3<Float>,
+        robotToWorldTransform: simd_float4x4
     ) {
-        pendingSurfaceAnchorID = surfaceAnchorID
-        pendingSurfaceNormal = surfaceNormal
-        pendingBaseWorldPoint = worldPoint
+        pendingBasePlacement = PendingBasePlacement(
+            selectedSurfaceAnchorID: surfaceAnchorID,
+            surfaceNormal: surfaceNormal,
+            baseWorldPoint: worldPoint,
+            robotToWorldTransform: robotToWorldTransform
+        )
+        pendingGripperWorldPoint = nil
         previewState = nil
         pendingSpatialRobotGoal = nil
         pendingGoalWorldPoint = nil
+        controlMode = .paused
         onboardingStage = .placingGripper
     }
 
-    func completeCalibration(
-        gripperWorldPoint: SIMD3<Float>,
-        toolPose: RobotToolPose
-    ) -> Bool {
-        guard let selectedSurfaceAnchorID = pendingSurfaceAnchorID,
-              let surfaceNormal = pendingSurfaceNormal,
-              let baseWorldPoint = pendingBaseWorldPoint,
-              let toolPosePosition = toolPose.position else {
-            return false
-        }
+    func updateWorldAnchorTransform(anchorID: UUID, transform: simd_float4x4) {
+        let translation = SIMD3<Float>(transform.columns.3.x, transform.columns.3.y, transform.columns.3.z)
 
-        let toolVector = SIMD3<Float>(
-            Float(toolPosePosition.x),
-            Float(toolPosePosition.y),
-            Float(toolPosePosition.z)
-        )
-        guard let solved = SpatialTargetingMath.solveCalibration(
-            baseWorldPoint: baseWorldPoint,
-            gripperWorldPoint: gripperWorldPoint,
-            toolPoseInRobotFrame: toolVector,
-            surfaceNormal: surfaceNormal
-        ) else {
+        if var calibrationPayload, calibrationPayload.worldAnchorID == anchorID {
+            calibrationPayload.baseWorldPoint = translation
+            calibrationPayload.robotToWorldTransform = transform
+            calibrationPayload.worldToRobotTransform = transform.inverse
+            self.calibrationPayload = calibrationPayload
+        }
+    }
+
+    func completeCalibration(
+        worldAnchorID: UUID?,
+        gripperWorldPoint: SIMD3<Float>,
+        robotToWorldTransform: simd_float4x4
+    ) -> Bool {
+        guard let pendingBasePlacement else {
             return false
         }
 
         pendingGripperWorldPoint = gripperWorldPoint
         calibrationPayload = SpatialCalibrationPayload(
-            selectedSurfaceAnchorID: selectedSurfaceAnchorID,
-            surfaceNormal: surfaceNormal,
-            baseWorldPoint: baseWorldPoint,
+            selectedSurfaceAnchorID: pendingBasePlacement.selectedSurfaceAnchorID,
+            worldAnchorID: worldAnchorID,
+            surfaceNormal: pendingBasePlacement.surfaceNormal,
+            baseWorldPoint: SIMD3<Float>(
+                robotToWorldTransform.columns.3.x,
+                robotToWorldTransform.columns.3.y,
+                robotToWorldTransform.columns.3.z
+            ),
             gripperWorldPoint: gripperWorldPoint,
-            robotToWorldTransform: solved.robotToWorldTransform,
-            worldToRobotTransform: solved.worldToRobotTransform
+            robotToWorldTransform: robotToWorldTransform,
+            worldToRobotTransform: robotToWorldTransform.inverse
         )
+        self.pendingBasePlacement = nil
         onboardingStage = .previewing
+        controlMode = .realToSim
         return true
+    }
+
+    func beginSimToRealHolding() {
+        guard calibrationPayload != nil else { return }
+        controlMode = .simToRealHolding
+        if onboardingStage != .confirming {
+            onboardingStage = .previewing
+        }
+    }
+
+    func endSimToRealHolding() {
+        controlMode = calibrationPayload == nil ? .paused : .realToSim
     }
 
     func resetCalibration() {
         calibrationPayload = nil
+        pendingBasePlacement = nil
         previewState = nil
         pendingSpatialRobotGoal = nil
         lastConfirmedSpatialRobotGoal = nil
-        pendingSurfaceAnchorID = nil
-        pendingSurfaceNormal = nil
-        pendingBaseWorldPoint = nil
         pendingGripperWorldPoint = nil
         pendingGoalWorldPoint = nil
+        controlMode = .paused
         onboardingStage = .needsStylus
     }
 
@@ -184,8 +248,8 @@ final class SpatialSessionModel {
         GatewayWorkspaceSnapshot(
             stage: onboardingStage.rawValue,
             calibrationWorldPosition: calibrationPayload?.baseWorldPoint,
-            calibrationSurfaceNormal: calibrationPayload?.surfaceNormal,
-            calibrationGripperWorldPoint: calibrationPayload?.gripperWorldPoint,
+            calibrationSurfaceNormal: calibrationPayload?.surfaceNormal ?? pendingBasePlacement?.surfaceNormal,
+            calibrationGripperWorldPoint: calibrationPayload?.gripperWorldPoint ?? pendingGripperWorldPoint,
             pendingRobotGoal: pendingSpatialRobotGoal,
             pendingRobotGoalWorldPoint: pendingGoalWorldPoint,
             lastConfirmedRobotGoal: lastConfirmedSpatialRobotGoal
@@ -231,8 +295,9 @@ final class SpatialSessionModel {
             return invokeResponse(request.id, [
                 "isCalibrated": calibrationPayload != nil,
                 "onboardingStage": onboardingStage.rawValue,
+                "controlMode": controlMode.rawValue,
                 "calibrationWorldPosition": vectorDict(calibrationPayload?.baseWorldPoint) ?? NSNull(),
-                "surfaceNormal": vectorDict(calibrationPayload?.surfaceNormal ?? pendingSurfaceNormal) ?? NSNull(),
+                "surfaceNormal": vectorDict(calibrationPayload?.surfaceNormal ?? pendingBasePlacement?.surfaceNormal) ?? NSNull(),
                 "gripperWorldPoint": vectorDict(calibrationPayload?.gripperWorldPoint ?? pendingGripperWorldPoint) ?? NSNull(),
                 "lastConfirmedRobotGoal": vectorDict(lastConfirmedSpatialRobotGoal) ?? NSNull(),
             ])
@@ -240,6 +305,7 @@ final class SpatialSessionModel {
             return invokeResponse(request.id, [
                 "confirmed": lastConfirmedSpatialRobotGoal != nil || pendingSpatialRobotGoal != nil,
                 "onboardingStage": onboardingStage.rawValue,
+                "controlMode": controlMode.rawValue,
                 "pendingRobotGoal": vectorDict(pendingSpatialRobotGoal) ?? NSNull(),
                 "pendingRobotGoalWorldPoint": vectorDict(pendingGoalWorldPoint) ?? NSNull(),
                 "lastConfirmedRobotGoal": vectorDict(lastConfirmedSpatialRobotGoal) ?? NSNull(),
@@ -247,8 +313,9 @@ final class SpatialSessionModel {
         case "vision.anchor.snapshot":
             return invokeResponse(request.id, [
                 "onboardingStage": onboardingStage.rawValue,
-                "calibrationWorldPosition": vectorDict(calibrationPayload?.baseWorldPoint) ?? NSNull(),
-                "surfaceNormal": vectorDict(calibrationPayload?.surfaceNormal ?? pendingSurfaceNormal) ?? NSNull(),
+                "controlMode": controlMode.rawValue,
+                "calibrationWorldPosition": vectorDict(calibrationPayload?.baseWorldPoint ?? pendingBasePlacement?.baseWorldPoint) ?? NSNull(),
+                "surfaceNormal": vectorDict(calibrationPayload?.surfaceNormal ?? pendingBasePlacement?.surfaceNormal) ?? NSNull(),
                 "gripperWorldPoint": vectorDict(calibrationPayload?.gripperWorldPoint ?? pendingGripperWorldPoint) ?? NSNull(),
                 "pendingRobotGoal": vectorDict(pendingSpatialRobotGoal) ?? NSNull(),
                 "pendingRobotGoalWorldPoint": vectorDict(pendingGoalWorldPoint) ?? NSNull(),

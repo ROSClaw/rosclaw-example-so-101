@@ -3,6 +3,7 @@ import SwiftUI
 /// Scrolling chat message list — newest messages at the bottom.
 struct ChatStreamView: View {
     @Environment(CommandFlowModel.self) private var commandFlow
+    @Environment(SpatialSessionModel.self) private var spatial
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -15,7 +16,10 @@ struct ChatStreamView: View {
                             .padding(.top, 40)
                     } else {
                         ForEach(commandFlow.transcript) { entry in
-                            if entry.kind == .parsedCommand && commandFlow.pendingPreview != nil && entry.id == commandFlow.transcript.last(where: { $0.kind == .parsedCommand })?.id {
+                            if entry.kind == .parsedCommand &&
+                                commandFlow.pendingPreview != nil &&
+                                spatial.immersiveSpaceState != .open &&
+                                entry.id == commandFlow.transcript.last(where: { $0.kind == .parsedCommand })?.id {
                                 CommandPreviewCard()
                             } else {
                                 ChatBubbleView(entry: entry)

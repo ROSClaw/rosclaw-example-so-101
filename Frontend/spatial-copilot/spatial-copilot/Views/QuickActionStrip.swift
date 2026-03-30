@@ -21,7 +21,13 @@ struct QuickActionStrip: View {
                 // Home
                 if connection.supportsHomeCommand {
                     quickButton("Home", icon: "house.fill", tint: .blue) {
-                        Task { await commandFlow.handleInput("home robot") }
+                        Task {
+                            if spatial.immersiveSpaceState == .open {
+                                await commandFlow.executeQuickAction(.homeRobot)
+                            } else {
+                                await commandFlow.handleInput("home robot")
+                            }
+                        }
                     }
                 }
 
@@ -29,7 +35,13 @@ struct QuickActionStrip: View {
                 if connection.supportsCommand("openGripper") || connection.supportsCommand("closeGripper") {
                     let isOpen = state.robotState.gripperState == .open
                     quickButton(isOpen ? "Close" : "Open", icon: isOpen ? "hand.raised.slash.fill" : "hand.raised.fill", tint: .orange) {
-                        Task { await commandFlow.handleInput(isOpen ? "close gripper" : "open gripper") }
+                        Task {
+                            if spatial.immersiveSpaceState == .open {
+                                await commandFlow.executeQuickAction(isOpen ? .closeGripper : .openGripper)
+                            } else {
+                                await commandFlow.handleInput(isOpen ? "close gripper" : "open gripper")
+                            }
+                        }
                     }
                 }
 

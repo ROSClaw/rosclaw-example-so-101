@@ -74,6 +74,22 @@ struct SettingsSheet: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
+                    LabeledContent("Gripper Joint") {
+                        Text(
+                            state.robotState.gripperPosition.map { String(format: "%.4f", $0) }
+                                ?? "Unavailable"
+                        )
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    }
+                    LabeledContent("Gripper Open") {
+                        Text(
+                            state.robotState.gripperOpenFraction.map { String(format: "%.1f%%", $0 * 100.0) }
+                                ?? "Unavailable"
+                        )
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    }
                 }
                 Section("Stylus") {
                     LabeledContent("Connected") { Text(stylus.isConnected ? "Yes" : "No").font(.body.weight(.semibold)).foregroundStyle(stylus.isConnected ? .green : .secondary) }

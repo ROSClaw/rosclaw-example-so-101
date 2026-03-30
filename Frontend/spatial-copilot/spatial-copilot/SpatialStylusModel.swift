@@ -44,6 +44,18 @@ final class SpatialStylusModel {
         hasTrackingAccessory
     }
 
+    var isTipButtonPressed: Bool {
+        tipPressed
+    }
+
+    var isPrimaryButtonPressed: Bool {
+        primaryPressed
+    }
+
+    var isSecondaryButtonPressed: Bool {
+        secondaryPressed
+    }
+
     func getLatestButtonEvents() -> [SpatialStylusButtonEvent] {
         guard let stylusInput = activeStylus?.input else {
             return []

@@ -117,6 +117,53 @@ struct spatial_copilotTests {
     }
 
     @MainActor
+    @Test func applySnapshotDerivesLocalToolPoseAndGripperFractionWhenBackendOmitsThem() async throws {
+        let coordinator = AppCoordinator()
+        let state = GatewayFollowerState(
+            jointOrder: ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"],
+            jointPositions: [
+                "shoulder_pan": -0.5577381829450011,
+                "shoulder_lift": -1.763741516630753,
+                "elbow_flex": 1.5473974071527747,
+                "wrist_flex": 0.9911935795941422,
+                "wrist_roll": -1.6594053503576858,
+                "gripper": 0.9885706612647418,
+            ],
+            gripperPosition: 0.9885706612647418,
+            gripperOpenFraction: nil,
+            toolPose: nil,
+            toolPoseStatus: GatewayToolPoseStatus(
+                stage: "tool_pose_unavailable",
+                summary: "Joint states and kinematics are ready, but forward kinematics returned no tool pose.",
+                jointStateReceived: true,
+                jointCount: 6,
+                robotDescriptionReceived: true,
+                kinematicsReady: true,
+                missingJointNames: [],
+                baseFrame: "follower/base_link",
+                toolFrame: "follower/gripper_frame_link"
+            )
+        )
+        let snapshot = GatewayRobotSnapshot(
+            executorAgentID: "robot-executor",
+            executorSessionKey: "visionos-robot",
+            nodeID: "visionos-node",
+            capabilities: .followerDefault,
+            state: state,
+            stateSummary: nil,
+            estopLatched: false
+        )
+
+        coordinator.connection.applySnapshot(snapshot)
+
+        #expect(coordinator.state.robotState.gripperPosition == 0.9885706612647418)
+        #expect(coordinator.state.robotState.gripperOpenFraction == 0.9885706612647418)
+        #expect(coordinator.state.robotState.toolPose?.position != nil)
+        #expect(coordinator.state.toolPoseStatus?.stage == "local_fk_fallback")
+        #expect(coordinator.connection.remotePoseFlowSummary?.contains("local SO-101 forward kinematics") == true)
+    }
+
+    @MainActor
     @Test func applyCommandResultLatchesEstopAndDisablesExecution() async throws {
         let coordinator = AppCoordinator()
         let result = GatewayRobotCommandResult(
@@ -135,6 +182,38 @@ struct spatial_copilotTests {
         #expect(coordinator.state.robotState.actionStatus.rawValue == ActionStatus.cancelled.rawValue)
         #expect(coordinator.state.robotState.mode.rawValue == RobotMode.faulted.rawValue)
         #expect(coordinator.state.robotState.fault == "Emergency stop latched")
+    }
+
+    @MainActor
+    @Test func enteringImmersiveModeClearsPendingPanelPreviewState() async throws {
+        let coordinator = AppCoordinator()
+        coordinator.commandFlow.pendingCommand = .closeGripper
+        coordinator.commandFlow.pendingPreview = CommandPreview(
+            parsedCommandName: "Close Gripper",
+            targets: [],
+            validationResult: .allowed,
+            subsystemsTouched: ["gripper"],
+            requiresConfirmation: true,
+            canExecute: true
+        )
+        coordinator.commandFlow.pendingClarification = PendingCartesianClarification(
+            question: "How far?",
+            draft: PendingCartesianClarificationDraft(
+                x: 1,
+                y: 2,
+                z: 3,
+                referenceFrame: .baseAbsolute,
+                source: .voice
+            )
+        )
+        coordinator.commandFlow.appPhase = .awaitingConfirmation
+
+        coordinator.commandFlow.enterImmersiveMode()
+
+        #expect(coordinator.commandFlow.pendingCommand == nil)
+        #expect(coordinator.commandFlow.pendingPreview == nil)
+        #expect(coordinator.commandFlow.pendingClarification == nil)
+        #expect(coordinator.commandFlow.appPhase == .idle)
     }
     @Test func gatewayEndpointPrefersExplicitGatewayURL() throws {
         let configuration = try GatewayRobotEndpointConfiguration.from(environment: [

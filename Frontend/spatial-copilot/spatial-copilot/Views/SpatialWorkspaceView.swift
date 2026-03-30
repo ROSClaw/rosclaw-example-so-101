@@ -4,6 +4,7 @@ import RealityKit
 import RosClawBridge
 import Spatial
 import SwiftUI
+internal import UIKit
 
 /// Primary immersive space for stylus-driven onboarding, robot preview, and Cartesian confirmation.
 struct SpatialWorkspaceView: View {
@@ -16,11 +17,16 @@ struct SpatialWorkspaceView: View {
     private let arkitSession = ARKitSession()
     private let worldTracking = WorldTrackingProvider()
     private let planeDetection = PlaneDetectionProvider(alignments: [.horizontal])
+    private let jointStreamingPolicy = SpatialJointStreamingPolicy()
+    private let surfaceProjectionMaxDistance: Float = 0.35
+    private let stylusRayLiftMeters: Float = 0.12
 
     @State private var sceneRoot: Entity?
     @State private var robotModel: RobotModelEntity?
     @State private var workspaceVolume: Entity?
     @State private var lastWorkspaceBounds: WorkspaceBounds?
+    @State private var planeVisualizationRoot: Entity?
+    @State private var planeVisualizations: [UUID: ModelEntity] = [:]
     @State private var surfaceOverlay: Entity?
     @State private var placementMarker: ModelEntity?
     @State private var targetMarker: ModelEntity?
@@ -28,9 +34,12 @@ struct SpatialWorkspaceView: View {
     @State private var confirmPanel: Entity?
     @State private var guidePanel: Entity?
     @State private var accessoryTrackingProvider: AccessoryTrackingProvider?
-    @State private var planeAnchors: [UUID: PlaneAnchor] = [:]
+    @State private var planeMeshes: [UUID: SpatialPlaneMesh] = [:]
     @State private var currentSurfacePlacement: SurfacePlacement?
     @State private var currentTipWorldPoint: SIMD3<Float>?
+    @State private var lastJointStreamingState: SpatialJointStreamingState?
+    @State private var jointStreamRequestInFlight = false
+    @State private var jointStreamingPausedForInvalidTarget = false
     @State private var surfaceHintAnnounced = false
     @State private var sceneUpdateSubscription: EventSubscription?
 
@@ -39,6 +48,11 @@ struct SpatialWorkspaceView: View {
             let root = Entity()
             content.add(root)
             sceneRoot = root
+
+            let planeVisualizationContainer = Entity()
+            planeVisualizationContainer.isEnabled = false
+            root.addChild(planeVisualizationContainer)
+            planeVisualizationRoot = planeVisualizationContainer
 
             let overlay = buildSurfaceOverlay()
             overlay.isEnabled = false
@@ -62,11 +76,13 @@ struct SpatialWorkspaceView: View {
             }
             if let panel = attachments.entity(for: "confirm-goal") {
                 panel.isEnabled = false
+                panel.components.set(BillboardComponent())
                 root.addChild(panel)
                 confirmPanel = panel
             }
             if let guide = attachments.entity(for: "calibration-guide") {
                 guide.isEnabled = true
+                guide.components.set(BillboardComponent())
                 root.addChild(guide)
                 guidePanel = guide
             }
@@ -115,13 +131,23 @@ struct SpatialWorkspaceView: View {
             await processPlaneUpdates()
         }
         .task {
+            await processWorldAnchorUpdates()
+        }
+        .task {
             await maintainRobotPoseRefreshLoop()
         }
         .onDisappear {
             sceneUpdateSubscription?.cancel()
             sceneUpdateSubscription = nil
-            planeAnchors.removeAll()
+            planeMeshes.removeAll()
+            planeVisualizations.removeAll()
+            lastJointStreamingState = nil
+            jointStreamingPausedForInvalidTarget = false
             arkitSession.stop()
+            Task {
+                await connection.stopJointPreviewStreaming()
+                await removeCalibrationWorldAnchor()
+            }
         }
     }
 
@@ -136,14 +162,19 @@ struct SpatialWorkspaceView: View {
         rebuildWorkspaceVolumeIfNeeded(root: root)
 
         if spatial.onboardingStage != .confirming {
-            currentTipWorldPoint =
-                stylusTipPosition(relativeTo: root, predicted: true) ??
-                stylusTipPosition(relativeTo: root, predicted: false)
+            if spatial.controlMode == .simToRealHolding {
+                currentTipWorldPoint = stylusTipPosition(relativeTo: root, predicted: false)
+            } else {
+                currentTipWorldPoint =
+                    stylusTipPosition(relativeTo: root, predicted: true) ??
+                    stylusTipPosition(relativeTo: root, predicted: false)
+            }
         }
 
         renderCurrentStage(relativeTo: root)
         handleButtonEvents()
         renderCurrentStage(relativeTo: root)
+        updateSimToRealStreaming()
         updateStatusBadgePosition()
         updateGuidePanelPosition()
     }
@@ -151,6 +182,7 @@ struct SpatialWorkspaceView: View {
     private func renderCurrentStage(relativeTo root: Entity) {
         switch spatial.onboardingStage {
         case .needsStylus, .needsRobotState:
+            planeVisualizationRoot?.isEnabled = false
             currentSurfacePlacement = nil
             surfaceOverlay?.isEnabled = false
             placementMarker?.isEnabled = false
@@ -161,22 +193,25 @@ struct SpatialWorkspaceView: View {
                 setAppPhase(.idle)
             }
         case .placingBase:
+            planeVisualizationRoot?.isEnabled = true
             spatial.setPreviewState(nil)
             setAppPhase(.idle)
             targetMarker?.isEnabled = false
             confirmPanel?.isEnabled = false
             renderBasePlacement()
         case .placingGripper:
-            spatial.setPreviewState(nil)
+            planeVisualizationRoot?.isEnabled = false
             setAppPhase(.idle)
             targetMarker?.isEnabled = false
             confirmPanel?.isEnabled = false
             renderGripperPlacement()
         case .previewing:
-            setAppPhase(.previewing)
+            planeVisualizationRoot?.isEnabled = false
+            setAppPhase(spatial.controlMode == .simToRealHolding ? .executing : .previewing)
             confirmPanel?.isEnabled = false
             renderRobotPreview()
         case .confirming:
+            planeVisualizationRoot?.isEnabled = false
             setAppPhase(.awaitingConfirmation)
             renderConfirmation()
         }
@@ -185,17 +220,25 @@ struct SpatialWorkspaceView: View {
     }
 
     private func renderBasePlacement() {
-        guard let tip = currentTipWorldPoint,
-              let surfacePlacement = resolvedSurfacePlacement(for: tip) else {
+        guard let tip = currentTipWorldPoint else {
             currentSurfacePlacement = nil
             surfaceOverlay?.isEnabled = false
             placementMarker?.isEnabled = false
             return
         }
 
+        guard let surfacePlacement = resolvedSurfacePlacement(for: tip) else {
+            currentSurfacePlacement = nil
+            setMarkerColor(placementMarker, isValid: false)
+            placementMarker?.position = tip
+            placementMarker?.isEnabled = true
+            surfaceOverlay?.isEnabled = false
+            return
+        }
+
         currentSurfacePlacement = surfacePlacement
-        placementMarker?.model?.materials = [SimpleMaterial(color: .orange, isMetallic: false)]
-        placementMarker?.position = surfacePlacement.worldPoint
+        setMarkerColor(placementMarker, isValid: true)
+        placementMarker?.position = surfacePlacement.worldPoint + (surfacePlacement.surfaceNormal * 0.02)
         placementMarker?.isEnabled = true
         surfaceOverlay?.transform = Transform(
             scale: SIMD3<Float>(repeating: 1),
@@ -208,11 +251,20 @@ struct SpatialWorkspaceView: View {
     private func renderGripperPlacement() {
         currentSurfacePlacement = nil
         surfaceOverlay?.isEnabled = false
-        guard let tip = currentTipWorldPoint else {
+        guard let tip = currentTipWorldPoint,
+              let pendingBasePlacement = spatial.pendingBasePlacement else {
             placementMarker?.isEnabled = false
+            spatial.setPreviewState(nil)
             return
         }
-        placementMarker?.model?.materials = [SimpleMaterial(color: .cyan, isMetallic: false)]
+
+        let previewState = previewState(
+            for: tip,
+            robotToWorldTransform: pendingBasePlacement.robotToWorldTransform
+        )
+        spatial.setPreviewState(previewState)
+
+        setMarkerColor(placementMarker, isValid: previewState.isValid)
         placementMarker?.position = tip
         placementMarker?.isEnabled = true
     }
@@ -228,46 +280,14 @@ struct SpatialWorkspaceView: View {
             return
         }
 
-        let requestedRobotPoint = SpatialTargetingMath.robotPosition(
-            fromWorldPosition: tip,
-            using: calibration.worldToRobotTransform
+        let previewState = previewState(
+            for: tip,
+            robotToWorldTransform: calibration.robotToWorldTransform
         )
-        let clampedRobotPoint = SpatialTargetingMath.clamp(requestedRobotPoint, to: connection.workspaceBounds)
-        let resolvedWorldPoint = SpatialTargetingMath.worldPosition(
-            fromRobotPosition: clampedRobotPoint,
-            using: calibration.robotToWorldTransform
-        )
-        let ikResult = SO101PreviewIK().solve(
-            targetInBaseFrame: SIMD3<Double>(
-                Double(clampedRobotPoint.x),
-                Double(clampedRobotPoint.y),
-                Double(clampedRobotPoint.z)
-            ),
-            seededFromJointPositions: state.robotState.jointPositions,
-            preserveWristRoll: true
-        )
-        let endEffectorWorldPoint = SpatialTargetingMath.worldPosition(
-            fromRobotPosition: SIMD3<Float>(
-                Float(ikResult.endEffectorPosition.x),
-                Float(ikResult.endEffectorPosition.y),
-                Float(ikResult.endEffectorPosition.z)
-            ),
-            using: calibration.robotToWorldTransform
-        )
+        spatial.setPreviewState(previewState)
 
-        spatial.setPreviewState(
-            .init(
-                targetWorldPoint: resolvedWorldPoint,
-                requestedRobotPoint: requestedRobotPoint,
-                clampedRobotPoint: clampedRobotPoint,
-                insideWorkspace: SpatialTargetingMath.isInside(requestedRobotPoint, bounds: connection.workspaceBounds),
-                previewJointPositions: ikResult.jointAngles.asJointPositionMap,
-                previewEndEffectorWorldPoint: endEffectorWorldPoint,
-                positionErrorMeters: ikResult.positionErrorMeters
-            )
-        )
-
-        targetMarker?.position = resolvedWorldPoint
+        setMarkerColor(targetMarker, isValid: previewState.isValid)
+        targetMarker?.position = previewState.targetWorldPoint
         targetMarker?.isEnabled = true
     }
 
@@ -276,67 +296,151 @@ struct SpatialWorkspaceView: View {
         placementMarker?.isEnabled = false
         confirmPanel?.isEnabled = spatial.pendingSpatialRobotGoal != nil
         if let worldPoint = spatial.pendingGoalWorldPoint {
+            setMarkerColor(targetMarker, isValid: true)
             targetMarker?.position = worldPoint
             targetMarker?.isEnabled = true
-            confirmPanel?.position = worldPoint + SIMD3<Float>(0, 0.08, 0)
+            confirmPanel?.position = worldPoint + SIMD3<Float>(0, 0.13, 0)
         }
     }
 
     // MARK: - Input handling
 
     private func handleButtonEvents() {
-        for event in stylusModel.getLatestButtonEvents() where event.isPressed {
+        for event in stylusModel.getLatestButtonEvents() {
             switch event.source {
             case .primary:
-                handlePrimaryPress()
+                if event.isPressed {
+                    Task { @MainActor in await handlePrimaryPress() }
+                } else {
+                    Task { @MainActor in await handlePrimaryRelease() }
+                }
             case .secondary:
-                handleSecondaryPress()
-            case .tip, .none:
+                if event.isPressed {
+                    handleSecondaryPress()
+                }
+            case .tip:
+                if event.isPressed {
+                    handleTipPress()
+                }
+            case .none:
                 break
             }
         }
     }
 
-    private func handlePrimaryPress() {
+    private func handlePrimaryPress() async {
         switch spatial.onboardingStage {
         case .needsStylus:
             commandFlow.appendTranscript(.error, "Connect the spatial stylus before starting immersive calibration.")
         case .needsRobotState:
             commandFlow.appendTranscript(.error, "Live robot gripper pose is still unavailable.")
         case .placingBase:
-            guard let surfacePlacement = currentSurfacePlacement else {
+            guard let sampledTip = await stabilizedStylusTipPosition(),
+                  let surfacePlacement = resolvedSurfacePlacement(for: sampledTip) else {
                 commandFlow.appendTranscript(.error, "Move the stylus onto a recognized surface before confirming the robot base.")
                 return
             }
+            let baseTransform = SpatialTargetingMath.basePlacementTransform(
+                baseWorldPoint: surfacePlacement.worldPoint,
+                surfaceNormal: surfacePlacement.surfaceNormal
+            )
             spatial.registerBasePlacement(
                 surfaceAnchorID: surfacePlacement.anchorID,
                 surfaceNormal: surfacePlacement.surfaceNormal,
-                worldPoint: surfacePlacement.worldPoint
+                worldPoint: surfacePlacement.worldPoint,
+                robotToWorldTransform: baseTransform
             )
-            commandFlow.appendTranscript(.system, "Robot base placed. Now point the stylus at the gripper location and press the main button again.")
+            commandFlow.appendTranscript(.system, "Robot base placed. Move the stylus to the real gripper so the USDZ arm can be aligned.")
         case .placingGripper:
-            guard let tip = currentTipWorldPoint,
-                  let toolPose = state.robotState.toolPose,
-                  spatial.completeCalibration(gripperWorldPoint: tip, toolPose: toolPose) else {
+            guard let sampledTip = await stabilizedStylusTipPosition(),
+                  let pendingBasePlacement = spatial.pendingBasePlacement else {
                 commandFlow.appendTranscript(.error, "The virtual robot could not be calibrated from the sampled base and gripper points.")
                 return
             }
-            commandFlow.appendTranscript(.system, "Calibration complete. Hover the stylus inside the workspace to preview the robot and press the main button to review a Cartesian move.")
+            guard let robotToWorldTransform = resolvedCalibrationTransform(
+                for: sampledTip,
+                pendingBasePlacement: pendingBasePlacement
+            ) else {
+                commandFlow.appendTranscript(.error, "The virtual robot could not be calibrated from the sampled base and gripper points.")
+                return
+            }
+            let preview = previewState(
+                for: sampledTip,
+                robotToWorldTransform: robotToWorldTransform
+            )
+            guard preview.isValid else {
+                commandFlow.appendTranscript(.error, invalidTargetMessage(for: preview.invalidReason, stage: .placingGripper))
+                return
+            }
+            let updatedAnchor: WorldAnchor?
+            do {
+                updatedAnchor = try await createWorldAnchor(transform: robotToWorldTransform)
+            } catch {
+                updatedAnchor = nil
+                commandFlow.appendTranscript(
+                    .system,
+                    "Calibration completed in the current world frame. Persistent world anchoring is unavailable right now because \(error.localizedDescription)."
+                )
+            }
+            guard spatial.completeCalibration(
+                worldAnchorID: updatedAnchor?.id,
+                gripperWorldPoint: sampledTip,
+                robotToWorldTransform: robotToWorldTransform
+            ) else {
+                commandFlow.appendTranscript(.error, "The virtual robot could not be calibrated from the sampled base and gripper points.")
+                return
+            }
+            commandFlow.appendTranscript(.system, "Calibration complete. The virtual gripper now follows the stylus preview; hold the main stylus button to drive the real robot from the preview.")
         case .previewing:
             guard let preview = spatial.previewState else {
                 commandFlow.appendTranscript(.error, "The stylus target could not be resolved.")
                 return
             }
-            spatial.setPendingSpatialGoal(preview.clampedRobotPoint, worldPoint: preview.targetWorldPoint)
-            if !preview.insideWorkspace {
-                commandFlow.appendTranscript(.system, "Target clamped to the nearest safe workspace point before confirmation.")
+            guard preview.isValid else {
+                commandFlow.appendTranscript(.error, invalidTargetMessage(for: preview.invalidReason, stage: .previewing))
+                return
             }
+            guard jointStreamingPolicy.canStream(preview: preview) else {
+                commandFlow.appendTranscript(.error, "Sim-to-real hold is blocked because the preview IK error is too large.")
+                return
+            }
+            spatial.beginSimToRealHolding()
+            commandFlow.appendTranscript(.system, "Sim-to-real hold active. The preview joints are driving the real arm until you release the main button.")
         case .confirming:
             break
         }
     }
 
+    private func handlePrimaryRelease() async {
+        guard spatial.controlMode == .simToRealHolding else { return }
+        spatial.endSimToRealHolding()
+        lastJointStreamingState = nil
+        jointStreamingPausedForInvalidTarget = false
+        await connection.stopJointPreviewStreaming()
+        commandFlow.appendTranscript(.system, "Sim-to-real hold released. The virtual preview is active again without moving the real robot.")
+    }
+
+    private func handleTipPress() {
+        guard spatial.onboardingStage == .previewing,
+              spatial.controlMode != .simToRealHolding else {
+            return
+        }
+        guard let preview = spatial.previewState else {
+            commandFlow.appendTranscript(.error, "The stylus target could not be resolved.")
+            return
+        }
+        guard preview.isValid else {
+            commandFlow.appendTranscript(.error, invalidTargetMessage(for: preview.invalidReason, stage: .previewing))
+            return
+        }
+        spatial.setPendingSpatialGoal(preview.requestedRobotPoint, worldPoint: preview.targetWorldPoint)
+    }
+
     private func handleSecondaryPress() {
+        if spatial.controlMode == .simToRealHolding {
+            Task { @MainActor in await handlePrimaryRelease() }
+            return
+        }
         if spatial.onboardingStage == .confirming {
             cancelConfirmation()
         }
@@ -393,29 +497,45 @@ struct SpatialWorkspaceView: View {
     private func processPlaneUpdates() async {
         for await update in planeDetection.anchorUpdates {
             let anchor = update.anchor
-            if isEligible(anchor) {
-                if !surfaceHintAnnounced {
-                    surfaceHintAnnounced = true
-                    commandFlow.appendTranscript(.system, "Surface recognized. Use the stylus to place the base on the surface, then sample the gripper in free space.")
-                }
+            if isEligible(anchor), !surfaceHintAnnounced {
+                surfaceHintAnnounced = true
+                commandFlow.appendTranscript(.system, "Surface recognized. Use the stylus to place the base on the surface, then sample the gripper in free space.")
             }
 
             switch update.event {
             case .added, .updated:
                 if isEligible(anchor) {
-                    planeAnchors[anchor.id] = anchor
+                    planeMeshes[anchor.id] = SpatialPlaneMesh(anchor: anchor)
+                    await upsertPlaneVisualization(for: anchor)
                 } else {
-                    planeAnchors.removeValue(forKey: anchor.id)
+                    planeMeshes.removeValue(forKey: anchor.id)
+                    await removePlaneVisualization(for: anchor.id)
                 }
             case .removed:
-                planeAnchors.removeValue(forKey: anchor.id)
+                planeMeshes.removeValue(forKey: anchor.id)
+                await removePlaneVisualization(for: anchor.id)
+            }
+        }
+    }
+
+    private func processWorldAnchorUpdates() async {
+        for await update in worldTracking.anchorUpdates {
+            let anchor = update.anchor
+            switch update.event {
+            case .added, .updated:
+                spatial.updateWorldAnchorTransform(
+                    anchorID: anchor.id,
+                    transform: anchor.originFromAnchorTransform
+                )
+            case .removed:
+                continue
             }
         }
     }
 
     private func maintainRobotPoseRefreshLoop() async {
         while !Task.isCancelled {
-            if spatial.onboardingStage == .needsRobotState,
+            if (spatial.onboardingStage == .needsRobotState || spatial.controlMode == .realToSim),
                state.robotState.toolPose?.position == nil,
                connection.remoteBootState == .ready {
                 await connection.refreshRobotSnapshot()
@@ -455,20 +575,54 @@ struct SpatialWorkspaceView: View {
         return SIMD3<Float>(point.x, point.y, point.z)
     }
 
+    private func stabilizedStylusTipPosition(
+        sampleCount: Int = 6,
+        intervalMilliseconds: Int = 20
+    ) async -> SIMD3<Float>? {
+        guard let root = sceneRoot else { return currentTipWorldPoint }
+        var samples: [SIMD3<Float>] = []
+        for index in 0..<sampleCount {
+            if let sample = stylusTipPosition(relativeTo: root, predicted: false) {
+                samples.append(sample)
+            }
+            if index + 1 < sampleCount {
+                try? await Task.sleep(for: .milliseconds(intervalMilliseconds))
+            }
+        }
+
+        guard !samples.isEmpty else { return currentTipWorldPoint }
+        let sum = samples.reduce(SIMD3<Float>.zero, +)
+        return sum / Float(samples.count)
+    }
+
     // MARK: - Presentation helpers
 
     private func syncRobotPresentation() {
-        if let calibration = spatial.calibrationPayload {
-            robotModel?.setCalibrationTransform(calibration.robotToWorldTransform)
+        let activeRobotTransform: simd_float4x4?
+        switch spatial.onboardingStage {
+        case .placingGripper:
+            activeRobotTransform = spatial.pendingBasePlacement?.robotToWorldTransform
+        default:
+            activeRobotTransform = spatial.calibrationPayload?.robotToWorldTransform
+        }
+
+        if let activeRobotTransform {
+            robotModel?.setCalibrationTransform(activeRobotTransform)
             robotModel?.rootEntity.isEnabled = true
-            workspaceVolume?.transform = Transform(matrix: calibration.robotToWorldTransform)
-            workspaceVolume?.isEnabled = true
+            workspaceVolume?.transform = Transform(matrix: activeRobotTransform)
+            workspaceVolume?.isEnabled = spatial.onboardingStage == .placingGripper || spatial.calibrationPayload != nil
         } else {
             robotModel?.rootEntity.isEnabled = false
             workspaceVolume?.isEnabled = false
         }
 
-        if let preview = spatial.previewState {
+        let shouldApplyPreviewJoints =
+            spatial.onboardingStage == .placingGripper ||
+            spatial.onboardingStage == .previewing ||
+            spatial.controlMode == .simToRealHolding
+
+        if shouldApplyPreviewJoints,
+           let preview = spatial.previewState {
             robotModel?.applyPreviewJoints(preview.previewJointPositions)
         } else {
             robotModel?.applyPreviewJoints(nil)
@@ -482,15 +636,72 @@ struct SpatialWorkspaceView: View {
         guard lastWorkspaceBounds != connection.workspaceBounds else { return }
         workspaceVolume?.removeFromParent()
         let volume = buildWorkspaceVolume(bounds: connection.workspaceBounds)
-        volume.isEnabled = spatial.calibrationPayload != nil
+        volume.isEnabled = spatial.calibrationPayload != nil || spatial.pendingBasePlacement != nil
         root.addChild(volume)
         workspaceVolume = volume
         lastWorkspaceBounds = connection.workspaceBounds
     }
 
+    private func updateSimToRealStreaming() {
+        guard spatial.controlMode == .simToRealHolding else {
+            lastJointStreamingState = nil
+            jointStreamingPausedForInvalidTarget = false
+            return
+        }
+        guard let preview = spatial.previewState else {
+            pauseJointStreamingForInvalidTarget(reason: "Sim-to-real hold is paused because the preview target is unavailable.")
+            lastJointStreamingState = nil
+            return
+        }
+        guard jointStreamingPolicy.canStream(preview: preview) else {
+            pauseJointStreamingForInvalidTarget(reason: invalidTargetMessage(for: preview.invalidReason, stage: .previewing))
+            lastJointStreamingState = nil
+            return
+        }
+        if jointStreamingPausedForInvalidTarget {
+            jointStreamingPausedForInvalidTarget = false
+            lastJointStreamingState = nil
+            commandFlow.appendTranscript(.system, "Sim-to-real hold resumed. The target is back inside the safe zone.")
+        }
+        guard !jointStreamRequestInFlight else { return }
+
+        let now = CACurrentMediaTime()
+        guard jointStreamingPolicy.shouldStream(
+            preview: preview,
+            previous: lastJointStreamingState,
+            now: now
+        ) else {
+            return
+        }
+
+        jointStreamRequestInFlight = true
+        lastJointStreamingState = SpatialJointStreamingState(
+            jointPositions: preview.previewJointPositions,
+            endEffectorWorldPoint: preview.previewEndEffectorWorldPoint,
+            sentAt: now
+        )
+
+        Task { @MainActor in
+            defer { jointStreamRequestInFlight = false }
+            do {
+                try await connection.streamJointPreview(
+                    preview.previewJointPositions,
+                    durationSec: 0.12
+                )
+            } catch {
+                spatial.endSimToRealHolding()
+                lastJointStreamingState = nil
+                jointStreamingPausedForInvalidTarget = false
+                await connection.stopJointPreviewStreaming()
+                commandFlow.appendTranscript(.error, "Live sim-to-real streaming failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
     private func updateStatusBadgePosition() {
         guard let badge = statusBadge else { return }
-        if let previewPoint = spatial.previewState?.previewEndEffectorWorldPoint {
+        if spatial.controlMode == .simToRealHolding,
+           let previewPoint = spatial.previewState?.previewEndEffectorWorldPoint {
             badge.position = previewPoint + SIMD3<Float>(0.06, 0.08, 0.04)
             return
         }
@@ -500,6 +711,10 @@ struct SpatialWorkspaceView: View {
         }
         if let calibration = spatial.calibrationPayload {
             badge.position = calibration.baseWorldPoint + SIMD3<Float>(0.16, 0.24, 0.08)
+            return
+        }
+        if let pendingBaseWorldPoint = spatial.pendingBaseWorldPoint {
+            badge.position = pendingBaseWorldPoint + SIMD3<Float>(0.12, 0.16, 0.06)
             return
         }
         badge.position = SIMD3<Float>(0.0, 1.1, -0.6)
@@ -517,10 +732,7 @@ struct SpatialWorkspaceView: View {
         case .needsStylus, .needsRobotState:
             guide.position = (spatial.pendingBaseWorldPoint ?? SIMD3<Float>(0, 1.1, -0.6)) + SIMD3<Float>(0, 0.1, 0)
             guide.isEnabled = true
-        case .confirming:
-            guide.position = (spatial.pendingGoalWorldPoint ?? spatial.calibrationPayload?.baseWorldPoint ?? SIMD3<Float>(0, 1.1, -0.6)) + SIMD3<Float>(0, 0.12, 0)
-            guide.isEnabled = true
-        case .previewing:
+        case .confirming, .previewing:
             guide.isEnabled = false
         }
     }
@@ -534,45 +746,138 @@ struct SpatialWorkspaceView: View {
     // MARK: - Spatial calculations
 
     private func resolvedSurfacePlacement(for point: SIMD3<Float>) -> SurfacePlacement? {
-        var best: SurfacePlacement?
+        let raycastCandidate = resolvedSurfacePlacementFromRaycast(for: point)
+        let projectionCandidates = SpatialPlaneProjector.project(
+            point: point,
+            onto: Array(planeMeshes.values),
+            maxDistance: surfaceProjectionMaxDistance
+        )
 
-        for anchor in planeAnchors.values where isEligible(anchor) {
-            let extentTransform = anchor.originFromAnchorTransform * anchor.geometry.extent.anchorFromExtentTransform
-            let localPoint = SpatialTargetingMath.transform(point: point, with: extentTransform.inverse)
-            let halfWidth = anchor.geometry.extent.width * 0.5
-            let halfDepth = anchor.geometry.extent.height * 0.5
-            let clampedLocal = SIMD3<Float>(
-                x: min(max(localPoint.x, -halfWidth), halfWidth),
-                y: 0,
-                z: min(max(localPoint.z, -halfDepth), halfDepth)
+        return SpatialPlaneProjector
+            .resolvePreferredCandidate(
+                raycastCandidate: raycastCandidate,
+                projectionCandidates: projectionCandidates
             )
-            let worldPoint = SpatialTargetingMath.transform(point: clampedLocal, with: extentTransform)
-            var normal = SIMD3<Float>(
-                extentTransform.columns.1.x,
-                extentTransform.columns.1.y,
-                extentTransform.columns.1.z
-            )
-            if simd_dot(normal, SIMD3<Float>(0, 1, 0)) < 0 {
-                normal *= -1
+            .map { candidate in
+                SurfacePlacement(
+                    anchorID: candidate.anchorID,
+                    worldPoint: candidate.worldPoint,
+                    surfaceNormal: candidate.surfaceNormal,
+                    distanceToTip: candidate.distanceToPoint,
+                    score: candidate.score,
+                    resolutionMethod: candidate.method,
+                    comparisonDeltaMeters: candidate.comparisonDeltaMeters
+                )
             }
-            let placement = SurfacePlacement(
-                anchorID: anchor.id,
-                worldPoint: worldPoint,
-                surfaceNormal: simd_normalize(normal),
-                distanceToTip: simd_length(worldPoint - point)
-            )
-            if best == nil || placement.distanceToTip < best!.distanceToTip {
-                best = placement
-            }
+    }
+
+    private func resolvedSurfacePlacementFromRaycast(for point: SIMD3<Float>) -> SpatialPlaneProjector.RaycastCandidate? {
+        guard let root = sceneRoot,
+              let raycastResult = root.scene?.raycast(
+                  origin: point + SIMD3<Float>(0, stylusRayLiftMeters, 0),
+                  direction: SIMD3<Float>(0, -1, 0),
+                  length: surfaceProjectionMaxDistance + stylusRayLiftMeters,
+                  query: .nearest,
+                  mask: PlaneAnchor.horizontalCollisionGroup
+              ).first,
+              let anchorID = raycastResult.entity.components[PlaneAnchorIDComponent.self]?.anchorID,
+              let planeMesh = planeMeshes[anchorID]
+        else {
+            return nil
         }
 
-        return best
+        let distanceToTip = simd_length(raycastResult.position - point)
+        guard distanceToTip <= surfaceProjectionMaxDistance else {
+            return nil
+        }
+
+        return SpatialPlaneProjector.RaycastCandidate(
+            anchorID: anchorID,
+            worldPoint: raycastResult.position,
+            surfaceNormal: planeMesh.surfaceNormal,
+            distanceToPoint: distanceToTip,
+            surfaceArea: planeMesh.areaEstimate,
+            classificationBias: planeMesh.classificationBias
+        )
+    }
+
+    private func resolvedCalibrationTransform(
+        for gripperWorldPoint: SIMD3<Float>,
+        pendingBasePlacement: SpatialSessionModel.PendingBasePlacement
+    ) -> simd_float4x4? {
+        guard let toolPosePosition = state.robotState.toolPose?.position else {
+            return nil
+        }
+
+        let toolVector = SIMD3<Float>(
+            Float(toolPosePosition.x),
+            Float(toolPosePosition.y),
+            Float(toolPosePosition.z)
+        )
+
+        return SpatialTargetingMath.solveCalibration(
+            baseWorldPoint: pendingBasePlacement.baseWorldPoint,
+            gripperWorldPoint: gripperWorldPoint,
+            toolPoseInRobotFrame: toolVector,
+            surfaceNormal: pendingBasePlacement.surfaceNormal
+        )?.robotToWorldTransform
     }
 
     private func isEligible(_ anchor: PlaneAnchor) -> Bool {
         guard anchor.alignment == .horizontal else { return false }
         guard anchor.surfaceClassification == .table || anchor.surfaceClassification == .floor else { return false }
         return anchor.geometry.extent.width > 0.25 && anchor.geometry.extent.height > 0.25
+    }
+
+    private func previewState(
+        for targetWorldPoint: SIMD3<Float>,
+        robotToWorldTransform: simd_float4x4
+    ) -> SpatialSessionModel.SpatialPreviewState {
+        let seedJointPositions = spatial.previewState?.previewJointPositions ?? state.robotState.jointPositions
+        return SpatialTargetingMath.previewState(
+            targetWorldPoint: targetWorldPoint,
+            robotToWorldTransform: robotToWorldTransform,
+            workspaceBounds: connection.workspaceBounds,
+            seedJointPositions: seedJointPositions,
+            maxIKErrorMeters: jointStreamingPolicy.maxIKErrorMeters
+        )
+    }
+
+    private func pauseJointStreamingForInvalidTarget(reason: String) {
+        guard !jointStreamingPausedForInvalidTarget else { return }
+        jointStreamingPausedForInvalidTarget = true
+        Task { await connection.stopJointPreviewStreaming() }
+        commandFlow.appendTranscript(.system, reason)
+    }
+
+    private func invalidTargetMessage(
+        for reason: SpatialSessionModel.SpatialTargetInvalidReason?,
+        stage: SpatialSessionModel.SpatialOnboardingStage
+    ) -> String {
+        switch reason {
+        case .noSurface:
+            return "Move the stylus onto a recognized table or floor surface before confirming the robot base."
+        case .outsideWorkspace:
+            if stage == .placingGripper {
+                return "The stylus point is outside the robot workspace. Bring it back into the green zone before finishing calibration."
+            }
+            return "The stylus point is outside the robot workspace. Bring it back into the green zone before starting or continuing control."
+        case .ikError:
+            if stage == .placingGripper {
+                return "The stylus point is inside the workspace, but the arm cannot reach it cleanly yet. Move back to a green target before finishing calibration."
+            }
+            return "The stylus point is not currently safe for control. Move back to a green target before starting or continuing control."
+        case .unavailable, .none:
+            return "The stylus target could not be resolved."
+        }
+    }
+
+    private func setMarkerColor(_ marker: ModelEntity?, isValid: Bool) {
+        guard let marker else { return }
+        let color = isValid
+            ? UIColor(red: 0.18, green: 0.96, blue: 0.42, alpha: 0.98)
+            : UIColor(red: 1.0, green: 0.27, blue: 0.27, alpha: 0.98)
+        marker.model?.materials = [UnlitMaterial(color: color)]
     }
 
     // MARK: - Entity builders
@@ -587,19 +892,19 @@ struct SpatialWorkspaceView: View {
     }
 
     private func buildPlacementMarker() -> ModelEntity {
-        let material = SimpleMaterial(color: .orange, isMetallic: false)
-        return ModelEntity(mesh: .generateSphere(radius: 0.014), materials: [material])
+        let material = UnlitMaterial(color: UIColor(red: 1.0, green: 0.55, blue: 0.0, alpha: 1.0))
+        return ModelEntity(mesh: .generateSphere(radius: 0.018), materials: [material])
     }
 
     private func buildTargetMarker() -> ModelEntity {
-        let material = SimpleMaterial(color: .init(red: 0.0, green: 1.0, blue: 0.45, alpha: 0.95), isMetallic: false)
+        let material = UnlitMaterial(color: UIColor(red: 0.0, green: 1.0, blue: 0.45, alpha: 0.98))
         return ModelEntity(mesh: .generateSphere(radius: 0.016), materials: [material])
     }
 
     private func buildWorkspaceVolume(bounds: WorkspaceBounds) -> Entity {
         let root = Entity()
-        let material = SimpleMaterial(color: .init(red: 0.0, green: 0.8, blue: 1.0, alpha: 0.85), isMetallic: false)
-        let cornerMaterial = SimpleMaterial(color: .init(red: 1.0, green: 0.4, blue: 0.1, alpha: 0.95), isMetallic: false)
+        let material = UnlitMaterial(color: UIColor(red: 0.0, green: 0.78, blue: 1.0, alpha: 0.32))
+        let cornerMaterial = UnlitMaterial(color: UIColor(red: 1.0, green: 0.45, blue: 0.08, alpha: 0.72))
         let corners = volumeCorners(bounds: bounds)
         let edges = [
             (0, 1), (0, 2), (0, 4),
@@ -611,17 +916,17 @@ struct SpatialWorkspaceView: View {
             (6, 7),
         ]
         for edge in edges {
-            root.addChild(buildLine(from: corners[edge.0], to: corners[edge.1], radius: 0.0018, material: material))
+            root.addChild(buildLine(from: corners[edge.0], to: corners[edge.1], radius: 0.0012, material: material))
         }
         for corner in corners {
-            let marker = ModelEntity(mesh: .generateSphere(radius: 0.0055), materials: [cornerMaterial])
+            let marker = ModelEntity(mesh: .generateSphere(radius: 0.0042), materials: [cornerMaterial])
             marker.position = corner
             root.addChild(marker)
         }
         return root
     }
 
-    private func buildLine(from start: SIMD3<Float>, to end: SIMD3<Float>, radius: Float, material: SimpleMaterial) -> ModelEntity {
+    private func buildLine(from start: SIMD3<Float>, to end: SIMD3<Float>, radius: Float, material: UnlitMaterial) -> ModelEntity {
         let vector = end - start
         let length = simd_length(vector)
         let entity = ModelEntity(mesh: .generateCylinder(height: length, radius: radius), materials: [material])
@@ -666,6 +971,82 @@ struct SpatialWorkspaceView: View {
         )
         cancelConfirmation()
     }
+
+    // MARK: - Anchor helpers
+
+    private func createWorldAnchor(transform: simd_float4x4) async throws -> WorldAnchor {
+        let anchor = WorldAnchor(originFromAnchorTransform: transform)
+        try await worldTracking.addAnchor(anchor)
+        return anchor
+    }
+
+    private func removeCalibrationWorldAnchor() async {
+        guard let worldAnchorID = spatial.calibrationPayload?.worldAnchorID else { return }
+        try? await worldTracking.removeAnchor(forID: worldAnchorID)
+    }
+
+    @MainActor
+    private func upsertPlaneVisualization(for anchor: PlaneAnchor) async {
+        guard let planeVisualizationRoot else { return }
+
+        do {
+            let mesh = try await MeshResource(from: anchor)
+            let shape = try await ShapeResource.generateStaticMesh(
+                positions: anchor.geometry.meshVertices.asSIMD3FloatArray(),
+                faceIndices: anchor.geometry.meshFaces.asUInt16Array()
+            )
+            let material = UnlitMaterial(color: planeVisualizationColor(for: anchor))
+            let visualization = planeVisualizations[anchor.id] ?? ModelEntity()
+            visualization.model = ModelComponent(mesh: mesh, materials: [material])
+            visualization.transform = Transform(matrix: anchor.originFromAnchorTransform)
+            visualization.position += planeNormal(for: anchor) * 0.002
+            let collisionGroup = anchor.alignment == .horizontal
+                ? PlaneAnchor.horizontalCollisionGroup
+                : PlaneAnchor.verticalCollisionGroup
+            visualization.components.set(
+                CollisionComponent(
+                    shapes: [shape],
+                    isStatic: true,
+                    filter: CollisionFilter(group: collisionGroup, mask: .all)
+                )
+            )
+            visualization.components.set(PlaneAnchorIDComponent(anchorID: anchor.id))
+            if visualization.parent == nil {
+                planeVisualizationRoot.addChild(visualization)
+            }
+            planeVisualizations[anchor.id] = visualization
+        } catch {
+            commandFlow.appendTranscript(.error, "Plane visualization failed: \(error.localizedDescription)")
+        }
+    }
+
+    @MainActor
+    private func removePlaneVisualization(for anchorID: UUID) async {
+        planeVisualizations.removeValue(forKey: anchorID)?.removeFromParent()
+    }
+
+    private func planeVisualizationColor(for anchor: PlaneAnchor) -> UIColor {
+        switch anchor.surfaceClassification {
+        case .table:
+            return UIColor(red: 0.0, green: 0.78, blue: 1.0, alpha: 0.10)
+        case .floor:
+            return UIColor(red: 0.18, green: 0.56, blue: 1.0, alpha: 0.06)
+        default:
+            return UIColor(red: 0.0, green: 0.78, blue: 1.0, alpha: 0.08)
+        }
+    }
+
+    private func planeNormal(for anchor: PlaneAnchor) -> SIMD3<Float> {
+        var normal = SIMD3<Float>(
+            anchor.originFromAnchorTransform.columns.1.x,
+            anchor.originFromAnchorTransform.columns.1.y,
+            anchor.originFromAnchorTransform.columns.1.z
+        )
+        if simd_dot(normal, SIMD3<Float>(0, 1, 0)) < 0 {
+            normal *= -1
+        }
+        return simd_normalize(normal)
+    }
 }
 
 // MARK: - Helpers
@@ -675,6 +1056,13 @@ private struct SurfacePlacement {
     let worldPoint: SIMD3<Float>
     let surfaceNormal: SIMD3<Float>
     let distanceToTip: Float
+    let score: Float
+    let resolutionMethod: SpatialPlaneProjector.ResolutionMethod
+    let comparisonDeltaMeters: Float?
+}
+
+private struct PlaneAnchorIDComponent: Component {
+    let anchorID: UUID
 }
 
 private struct CartesianConfirmPanel: View {
@@ -684,25 +1072,47 @@ private struct CartesianConfirmPanel: View {
 
     var body: some View {
         if let pos = position {
-            VStack(spacing: 12) {
-                Text(String(format: "Move gripper to (%.3f, %.3f, %.3f) m?", pos.x, pos.y, pos.z))
-                    .font(.callout.weight(.medium))
+            VStack(spacing: 16) {
+                Image(systemName: "checkmark.circle")
+                    .font(.system(size: 42))
+                    .foregroundStyle(.green)
+
+                Text("Confirm the Cartesian move")
+                    .font(.headline.weight(.bold))
                     .multilineTextAlignment(.center)
+
+                Text("The green marker shows the resolved gripper target. Review the base-frame target below, then send or cancel.")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 300)
+
+                Text(String(format: "(%.3f, %.3f, %.3f) m", pos.x, pos.y, pos.z))
+                    .font(.callout.monospaced().weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(.white.opacity(0.08), in: Capsule())
+
                 HStack(spacing: 16) {
                     Button("Cancel") {
                         onCancel()
                     }
+                    .frame(minWidth: 120)
                     .buttonStyle(.bordered)
                     .tint(.secondary)
 
                     Button("Send") {
                         onConfirm(pos)
                     }
+                    .frame(minWidth: 120)
                     .buttonStyle(.borderedProminent)
                     .tint(.green)
                 }
+                .padding(.top, 4)
             }
-            .padding(16)
+            .frame(width: 360)
+            .padding(24)
             .glassBackgroundEffect()
         }
     }

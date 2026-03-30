@@ -238,6 +238,30 @@ struct GatewayToolPoseStatus: Codable, Sendable, Equatable {
         case updatedAt = "updated_at"
     }
 
+    nonisolated init(
+        stage: String,
+        summary: String,
+        jointStateReceived: Bool = false,
+        jointCount: Int = 0,
+        robotDescriptionReceived: Bool = false,
+        kinematicsReady: Bool = false,
+        missingJointNames: [String] = [],
+        baseFrame: String? = nil,
+        toolFrame: String? = nil,
+        updatedAt: String? = nil
+    ) {
+        self.stage = stage
+        self.summary = summary
+        self.jointStateReceived = jointStateReceived
+        self.jointCount = jointCount
+        self.robotDescriptionReceived = robotDescriptionReceived
+        self.kinematicsReady = kinematicsReady
+        self.missingJointNames = missingJointNames
+        self.baseFrame = baseFrame
+        self.toolFrame = toolFrame
+        self.updatedAt = updatedAt
+    }
+
     nonisolated init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.stage = try container.decodeIfPresent(String.self, forKey: .stage) ?? "unknown"

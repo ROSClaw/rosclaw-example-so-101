@@ -71,6 +71,38 @@ func makeFollowJointTrajectoryGoal(
     ]
 }
 
+/// Builds a `trajectory_msgs/msg/JointTrajectory` payload for direct topic publish.
+func makeJointTrajectoryMessage(
+    positions: [Double],
+    durationSec: Double
+) -> [String: Any] {
+    let sec = Int(durationSec)
+    let nanosec = Int((durationSec - Double(sec)) * 1e9)
+    return [
+        "header": [
+            "frame_id": "",
+        ] as [String: Any],
+        "joint_names": followerJointNames,
+        "points": [[
+            "positions": positions,
+            "time_from_start": [
+                "sec": sec,
+                "nanosec": nanosec,
+            ] as [String: Any],
+        ] as [String: Any]],
+    ]
+}
+
+func makeEmptyJointTrajectoryMessage() -> [String: Any] {
+    [
+        "header": [
+            "frame_id": "",
+        ] as [String: Any],
+        "joint_names": followerJointNames,
+        "points": [] as [[String: Any]],
+    ]
+}
+
 /// Builds a `GripperCommand.Goal` payload for rosbridge `send_action_goal`.
 func makeGripperCommandGoal(
     position: Double,

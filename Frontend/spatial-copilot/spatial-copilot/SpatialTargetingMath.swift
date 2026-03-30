@@ -1,5 +1,47 @@
+import Foundation
 import RosClawBridge
 import simd
+
+struct SpatialJointStreamingState {
+    let jointPositions: [String: Double]
+    let endEffectorWorldPoint: SIMD3<Float>
+    let sentAt: TimeInterval
+}
+
+struct SpatialJointStreamingPolicy {
+    var minimumSendInterval: TimeInterval = 1.0 / 15.0
+    var jointDeadbandRadians: Double = 0.01
+    var endEffectorDeadbandMeters: Float = 0.005
+    var maxIKErrorMeters: Double = 0.03
+
+    func canStream(preview: SpatialSessionModel.SpatialPreviewState) -> Bool {
+        preview.isValid && preview.positionErrorMeters <= maxIKErrorMeters
+    }
+
+    func shouldStream(
+        preview: SpatialSessionModel.SpatialPreviewState,
+        previous: SpatialJointStreamingState?,
+        now: TimeInterval
+    ) -> Bool {
+        guard canStream(preview: preview) else { return false }
+        guard let previous else { return true }
+        guard (now - previous.sentAt) >= minimumSendInterval else { return false }
+
+        if simd_length(preview.previewEndEffectorWorldPoint - previous.endEffectorWorldPoint) >= endEffectorDeadbandMeters {
+            return true
+        }
+
+        for jointName in followerJointNames {
+            let next = preview.previewJointPositions[jointName] ?? 0.0
+            let prior = previous.jointPositions[jointName] ?? 0.0
+            if abs(next - prior) >= jointDeadbandRadians {
+                return true
+            }
+        }
+
+        return false
+    }
+}
 
 enum SpatialTargetingMath {
     struct CalibrationSolution {
@@ -47,6 +89,34 @@ enum SpatialTargetingMath {
         )
     }
 
+    static func basePlacementTransform(
+        baseWorldPoint: SIMD3<Float>,
+        surfaceNormal: SIMD3<Float>,
+        forwardHint: SIMD3<Float>? = nil
+    ) -> simd_float4x4 {
+        let up = normalized(simd_dot(surfaceNormal, SIMD3<Float>(0, 1, 0)) >= 0 ? surfaceNormal : -surfaceNormal)
+        let referenceForward = forwardHint ?? SIMD3<Float>(0, -1, 0)
+        let projectedForward = projectOntoPlane(referenceForward, normal: up)
+        let forward: SIMD3<Float>
+        if simd_length_squared(projectedForward) > 0.000001 {
+            forward = normalized(projectedForward)
+        } else {
+            let fallbackAxis = abs(simd_dot(up, SIMD3<Float>(1, 0, 0))) < 0.9 ? SIMD3<Float>(1, 0, 0) : SIMD3<Float>(0, 1, 0)
+            forward = normalized(projectOntoPlane(fallbackAxis, normal: up))
+        }
+        let right = normalized(simd_cross(up, forward))
+        let orthonormalForward = normalized(simd_cross(right, up))
+
+        return simd_float4x4(
+            columns: (
+                SIMD4<Float>(orthonormalForward.x, orthonormalForward.y, orthonormalForward.z, 0),
+                SIMD4<Float>(right.x, right.y, right.z, 0),
+                SIMD4<Float>(up.x, up.y, up.z, 0),
+                SIMD4<Float>(baseWorldPoint.x, baseWorldPoint.y, baseWorldPoint.z, 1)
+            )
+        )
+    }
+
     static func robotPosition(
         fromWorldPosition worldPosition: SIMD3<Float>,
         using worldToRobotTransform: simd_float4x4
@@ -59,6 +129,61 @@ enum SpatialTargetingMath {
         using robotToWorldTransform: simd_float4x4
     ) -> SIMD3<Float> {
         transform(point: robotPosition, with: robotToWorldTransform)
+    }
+
+    static func previewState(
+        targetWorldPoint: SIMD3<Float>,
+        robotToWorldTransform: simd_float4x4,
+        workspaceBounds: WorkspaceBounds,
+        seedJointPositions: [String: Double],
+        maxIKErrorMeters: Double
+    ) -> SpatialSessionModel.SpatialPreviewState {
+        let worldToRobotTransform = robotToWorldTransform.inverse
+        let requestedRobotPoint = robotPosition(
+            fromWorldPosition: targetWorldPoint,
+            using: worldToRobotTransform
+        )
+        let insideWorkspace = isInside(requestedRobotPoint, bounds: workspaceBounds)
+        let clampedRobotPoint = clamp(requestedRobotPoint, to: workspaceBounds)
+        let ikTarget = insideWorkspace ? requestedRobotPoint : clampedRobotPoint
+        let ikResult = SO101PreviewIK().solve(
+            targetInBaseFrame: SIMD3<Double>(
+                Double(ikTarget.x),
+                Double(ikTarget.y),
+                Double(ikTarget.z)
+            ),
+            seededFromJointPositions: seedJointPositions,
+            preserveWristRoll: true
+        )
+        let previewEndEffectorWorldPoint = worldPosition(
+            fromRobotPosition: SIMD3<Float>(
+                Float(ikResult.endEffectorPosition.x),
+                Float(ikResult.endEffectorPosition.y),
+                Float(ikResult.endEffectorPosition.z)
+            ),
+            using: robotToWorldTransform
+        )
+
+        let invalidReason: SpatialSessionModel.SpatialTargetInvalidReason?
+        if !insideWorkspace {
+            invalidReason = .outsideWorkspace
+        } else if ikResult.positionErrorMeters > maxIKErrorMeters {
+            invalidReason = .ikError
+        } else {
+            invalidReason = nil
+        }
+
+        return SpatialSessionModel.SpatialPreviewState(
+            targetWorldPoint: targetWorldPoint,
+            requestedRobotPoint: requestedRobotPoint,
+            clampedRobotPoint: clampedRobotPoint,
+            insideWorkspace: insideWorkspace,
+            previewJointPositions: ikResult.jointAngles.asJointPositionMap,
+            previewEndEffectorWorldPoint: previewEndEffectorWorldPoint,
+            positionErrorMeters: ikResult.positionErrorMeters,
+            isValid: invalidReason == nil,
+            invalidReason: invalidReason
+        )
     }
 
     static func clamp(_ position: SIMD3<Float>, to bounds: WorkspaceBounds) -> SIMD3<Float> {
@@ -88,6 +213,11 @@ enum SpatialTargetingMath {
 
     static func transform(point: SIMD3<Float>, with matrix: simd_float4x4) -> SIMD3<Float> {
         let transformed = matrix * SIMD4<Float>(point.x, point.y, point.z, 1)
+        return SIMD3<Float>(transformed.x, transformed.y, transformed.z)
+    }
+
+    static func transform(direction: SIMD3<Float>, with matrix: simd_float4x4) -> SIMD3<Float> {
+        let transformed = matrix * SIMD4<Float>(direction.x, direction.y, direction.z, 0)
         return SIMD3<Float>(transformed.x, transformed.y, transformed.z)
     }
 }

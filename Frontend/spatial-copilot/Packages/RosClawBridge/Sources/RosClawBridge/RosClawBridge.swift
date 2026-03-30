@@ -240,7 +240,7 @@ public actor RosClawBridge {
 
     // MARK: - Emergency stop (§10.1 — bypasses agent reasoning)
 
-    public func emergencyStop() async {
+    public func stopArmTrajectory() async {
         let ns = configuration.namespace.isEmpty ? "/follower" : configuration.namespace
         let topic = "\(ns)/arm_controller/joint_trajectory"
         let emptyTrajectory: [String: Any] = [
@@ -255,5 +255,9 @@ public actor RosClawBridge {
             type: "trajectory_msgs/msg/JointTrajectory",
             msg: emptyTrajectory
         )
+    }
+
+    public func emergencyStop() async {
+        await stopArmTrajectory()
     }
 }

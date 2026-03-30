@@ -128,6 +128,54 @@ final class CommandFlowModel {
             appPhase = .idle
         }
     }
+
+    func enterImmersiveMode() {
+        guard appPhase != .executing else { return }
+        clearPendingInteractiveState(resetPhase: true)
+        stateModel?.lastRequestedCartesianTarget = nil
+    }
+
+    func executeQuickAction(_ command: RobotCommand) async {
+        guard connectionModel?.remoteBootState == .ready else {
+            appendTranscript(.error, "The Gateway executor is not ready yet.")
+            return
+        }
+        if case .emergencyStop = command {
+            await triggerEmergencyStop()
+            return
+        }
+        guard let stateModel else { return }
+
+        clearPendingInteractiveState(resetPhase: false)
+
+        let safetyResult = stateModel.safetyGate.validate(command, robotState: stateModel.robotState)
+        guard safetyResult.isAllowed else {
+            appendTranscript(.error, safetyResult.blockReason ?? "Command is not safe to execute.")
+            appPhase = .idle
+            return
+        }
+
+        appendTranscript(.parsedCommand, "Quick action: \(command.displayName)")
+        appPhase = .executing
+        stateModel.robotState.actionStatus = .executing
+        stateModel.robotState.mode = .executing
+        appendTranscript(.system, "Executing: \(command.displayName)")
+
+        do {
+            try await dispatchCommand(command)
+            if case .moveToCartesian = command {
+                appendCartesianResolutionTranscriptIfAvailable()
+            }
+            appendTranscript(.feedback, "Completed: \(command.displayName)")
+            appPhase = .idle
+        } catch {
+            stateModel.robotState.actionStatus = .failed
+            stateModel.robotState.mode = .faulted
+            stateModel.robotState.fault = error.localizedDescription
+            appendTranscript(.error, "Execution failed: \(error.localizedDescription)")
+            appPhase = .faulted
+        }
+    }
 // MARK: - Confirm / Cancel / E-Stop
 
     func confirmExecution() async {
@@ -233,6 +281,15 @@ final class CommandFlowModel {
         appPhase = command.requiresConfirmation ? .awaitingConfirmation : .executing
         if !command.requiresConfirmation {
             Task { await confirmExecution() }
+        }
+    }
+
+    private func clearPendingInteractiveState(resetPhase: Bool) {
+        pendingCommand = nil
+        pendingPreview = nil
+        pendingClarification = nil
+        if resetPhase, appPhase != .executing {
+            appPhase = .idle
         }
     }
 

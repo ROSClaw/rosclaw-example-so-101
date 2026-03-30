@@ -8,34 +8,29 @@ internal import UIKit
 final class RobotModelEntity {
 
     let rootEntity: Entity
+    private let visualRoot: Entity
     private(set) var didLoadPackagedAsset = false
     private var liveJointPositions: [String: Double] = [:]
     private var previewJointPositions: [String: Double]?
     private var bodyEntities: [String: Entity] = [:]
-    private var restTransforms: [String: Transform] = [:]
-    private var jawEntity: Entity?
-    private var currentCalibrationTransform = matrix_identity_float4x4
-
-    private let jointToBodyName: [String: String] = [
-        SO101ArmJoint.shoulderPan.rawValue: "shoulder",
-        SO101ArmJoint.shoulderLift.rawValue: "upper_arm",
-        SO101ArmJoint.elbowFlex.rawValue: "lower_arm",
-        SO101ArmJoint.wristFlex.rawValue: "wrist",
-        SO101ArmJoint.wristRoll.rawValue: "gripper",
-    ]
+    private var currentGripperAngle: Double = SO101Kinematics.jawAngle(forOpenFraction: nil)
+    private var currentForwardKinematics: SO101ForwardKinematics?
 
     init() async {
+        rootEntity = Entity()
         if let loaded = await Self.loadPackagedRobot() {
-            rootEntity = loaded
+            loaded.transform = Transform(matrix: SO101VisualAlignment.kinematicBaseFromModelTransform)
+            visualRoot = loaded
             didLoadPackagedAsset = true
-            discoverBodies(in: loaded)
         } else {
-            rootEntity = Self.buildPrimitiveFallback()
-            discoverBodies(in: rootEntity)
+            visualRoot = Self.buildPrimitiveFallback()
         }
+        rootEntity.addChild(visualRoot)
+        discoverBodies(in: visualRoot)
         rootEntity.name = "so101_robot"
         rootEntity.components.set(InputTargetComponent())
         rootEntity.generateCollisionShapes(recursive: true)
+        applyCurrentPose()
     }
 
     // MARK: - Joint updates
@@ -43,27 +38,17 @@ final class RobotModelEntity {
     func updateJoints(from robotState: RobotState) {
         liveJointPositions = robotState.jointPositions
         guard previewJointPositions == nil else { return }
-        applyJointMap(robotState.jointPositions)
+        applyCurrentPose()
     }
 
     func applyPreviewJoints(_ jointPositions: [String: Double]?) {
         previewJointPositions = jointPositions
-        if let jointPositions {
-            applyJointMap(jointPositions)
-        } else {
-            applyJointMap(liveJointPositions)
-        }
+        applyCurrentPose()
     }
 
     func updateGripper(openFraction: Double?) {
-        guard let jawEntity, let rest = restTransforms["jaw"] else { return }
-        let fraction = Float(openFraction ?? 0.5)
-        let angle = (-10.0 + (110.0 * fraction)) * (.pi / 180.0)
-        jawEntity.transform = Transform(
-            scale: rest.scale,
-            rotation: simd_quatf(angle: angle, axis: SIMD3<Float>(0, 0, 1)) * rest.rotation,
-            translation: rest.translation
-        )
+        currentGripperAngle = SO101Kinematics.jawAngle(forOpenFraction: openFraction)
+        applyCurrentPose()
     }
 
     func setFaulted(_ faulted: Bool) {
@@ -71,7 +56,9 @@ final class RobotModelEntity {
     }
 
     var endEffectorPosition: SIMD3<Float> {
-        jawEntity?.position(relativeTo: rootEntity) ?? [0.20, 0.00, 0.18]
+        guard let currentForwardKinematics else { return [0.20, 0.00, 0.18] }
+        let position = currentForwardKinematics.endEffectorPosition
+        return SIMD3<Float>(Float(position.x), Float(position.y), Float(position.z))
     }
 
     var hasExpectedBodyBindings: Bool {
@@ -79,31 +66,24 @@ final class RobotModelEntity {
     }
 
     func setCalibrationTransform(_ transform: simd_float4x4) {
-        currentCalibrationTransform = transform
         rootEntity.transform = Transform(matrix: transform)
     }
 
-    private func applyJointMap(_ jointPositions: [String: Double]) {
-        for joint in SO101ArmJoint.allCases {
-            guard let bodyName = jointToBodyName[joint.rawValue],
-                  let entity = bodyEntities[bodyName],
-                  let rest = restTransforms[bodyName] else {
-                continue
-            }
+    private func applyCurrentPose() {
+        let effectiveJointPositions = previewJointPositions ?? liveJointPositions
+        let jointAngles = SO101Kinematics.clampToJointLimits(
+            SO101JointAngles.seeded(from: effectiveJointPositions)
+        )
+        let forwardKinematics = SO101Kinematics.forwardKinematics(
+            jointAngles: jointAngles,
+            gripperAngle: currentGripperAngle
+        )
+        currentForwardKinematics = forwardKinematics
 
-            let axis = axisForJoint(joint)
-            let angle = Float(jointPositions[joint.rawValue] ?? 0)
-            entity.transform = Transform(
-                scale: rest.scale,
-                rotation: simd_quatf(angle: angle, axis: axis) * rest.rotation,
-                translation: rest.translation
-            )
+        for (bodyName, entity) in bodyEntities {
+            guard let transform = forwardKinematics.bodyModelTransforms[bodyName] else { continue }
+            entity.transform = Transform(matrix: simd_float4x4(transform))
         }
-    }
-
-    private func axisForJoint(_ joint: SO101ArmJoint) -> SIMD3<Float> {
-        let axis = SO101Kinematics.metadata(for: joint).axisInJointFrame
-        return SIMD3<Float>(Float(axis.x), Float(axis.y), Float(axis.z))
     }
 
     private func discoverBodies(in entity: Entity) {
@@ -119,10 +99,6 @@ final class RobotModelEntity {
                 if bestPaths[normalizedName] == nil || depth < bestPaths[normalizedName, default: depth + 1] {
                     bestPaths[normalizedName] = depth
                     bodyEntities[normalizedName] = current
-                    restTransforms[normalizedName] = current.transform
-                    if normalizedName == "jaw" {
-                        jawEntity = current
-                    }
                 }
             }
 
@@ -178,5 +154,16 @@ final class RobotModelEntity {
         let jaw = ModelEntity(mesh: .generateBox(size: [0.008, 0.025, 0.008]), materials: [grip])
         jaw.name = "jaw"; jaw.position = [0.27, 0.37, 0.165]; root.addChild(jaw)
         return root
+    }
+}
+
+private extension simd_float4x4 {
+    init(_ matrix: simd_double4x4) {
+        self.init(
+            SIMD4<Float>(Float(matrix.columns.0.x), Float(matrix.columns.0.y), Float(matrix.columns.0.z), Float(matrix.columns.0.w)),
+            SIMD4<Float>(Float(matrix.columns.1.x), Float(matrix.columns.1.y), Float(matrix.columns.1.z), Float(matrix.columns.1.w)),
+            SIMD4<Float>(Float(matrix.columns.2.x), Float(matrix.columns.2.y), Float(matrix.columns.2.z), Float(matrix.columns.2.w)),
+            SIMD4<Float>(Float(matrix.columns.3.x), Float(matrix.columns.3.y), Float(matrix.columns.3.z), Float(matrix.columns.3.w))
+        )
     }
 }

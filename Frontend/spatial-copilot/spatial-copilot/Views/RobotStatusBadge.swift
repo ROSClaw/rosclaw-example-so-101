@@ -16,7 +16,7 @@ struct RobotStatusBadge: View {
                     .font(.callout.weight(.bold))
             }
 
-            Text("Gripper: \(state.robotState.gripperState.rawValue.capitalized)")
+            Text("Gripper: \(state.robotState.gripperState.rawValue.capitalized)\(gripperValueSuffix)")
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
@@ -75,5 +75,15 @@ struct RobotStatusBadge: View {
             return "Unavailable"
         }
         return stage.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+
+    private var gripperValueSuffix: String {
+        if let fraction = state.robotState.gripperOpenFraction {
+            return String(format: " (%.0f%%)", fraction * 100.0)
+        }
+        if let position = state.robotState.gripperPosition {
+            return String(format: " (joint %.3f)", position)
+        }
+        return ""
     }
 }
