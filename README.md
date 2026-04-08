@@ -31,22 +31,27 @@ git submodule update --init --recursive
 
 ## Build
 
-Use the system Python 3 package:
+Verified on ROS 2 Jazzy. Use the repo-owned build wrapper:
 
 ```bash
-source /opt/ros/humble/setup.bash
-pip install 'google-genai>=1.0.0'
 cd Backend/ros2_ws
-export PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH
-colcon build --packages-up-to rosclaw_so101_bringup \
-  --cmake-args -DPython3_EXECUTABLE=/usr/bin/python3 -DPYTHON_EXECUTABLE=/usr/bin/python3 \
-  --allow-overriding so101_controller so101_description so101_ros2_bridge
+./build.sh
+```
+
+`build.sh` bootstraps `rosdep`, stages local Jazzy-compatible replacements for
+the upstream `system_data_recorder` and `so101_teleop` packages without
+modifying the `so101_ros2` submodule checkout, and then runs `colcon build`.
+
+Optional perception dependency:
+
+```bash
+pip install 'google-genai>=1.0.0'
 ```
 
 ## Launch
 
 ```bash
-source /opt/ros/humble/setup.bash
+source /opt/ros/jazzy/setup.bash
 source Backend/ros2_ws/install/setup.bash
 export GEMINI_API_KEY=your-api-key
 ros2 launch rosclaw_so101_bringup bringup.launch.py
